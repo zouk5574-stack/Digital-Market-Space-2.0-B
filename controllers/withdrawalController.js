@@ -1,139 +1,143 @@
-import { supabase } from "../config/supabaseClient.js";
+// controllers/withdrawalController.js
+import { supabase } from "../server.js";
 
-/**
- * Créer une demande de retrait
- */
-export const createWithdrawal = async (req, res) => {
+// ✅ Demander un retrait (vendeur)
+export async function requestWithdrawal(req, res) {
   try {
-    const { amount } = req.body;
-    const userId = req.user.id;
+    const userId = req.user.sub;
+    const { amount, provider_id, account_number } = req.body;
 
-    if (!amount || amount <= 0) {
-      return res.status(400).json({ error: "Montant invalide" });
+    if (!amount || !provider_id || !account_number) {
+      return res.status(400).json({ error: "Champs obligatoires manquants" });
     }
 
-    // Vérifier le solde
+    // Vérifier solde wallet
     const { data: wallet, error: walletError } = await supabase
       .from("wallets")
       .select("balance")
       .eq("user_id", userId)
       .single();
 
-    if (walletError) throw walletError;
-
-    if (!wallet || wallet.balance < amount) {
+    if (walletError || !wallet) {
+      return res.status(404).json({ error: "Wallet introuvable" });
+    }
+    if (wallet.balance < amount) {
       return res.status(400).json({ error: "Solde insuffisant" });
     }
 
-    // Créer la demande
-    const { data, error } = await supabase
+    // Créer la demande de retrait
+    const { data: withdrawal, error } = await supabase
       .from("withdrawals")
-      .insert([{ user_id: userId, amount, status: "pending" }])
+      .insert([{
+        user_id: userId,
+        amount,
+        provider_id,
+        account_number,
+        status: "pending"
+      }])
       .select()
       .single();
 
     if (error) throw error;
 
-    res.status(201).json({ message: "Demande de retrait créée", withdrawal: data });
+    return res.status(201).json({ message: "Retrait demandé ✅", withdrawal });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("Request withdrawal error:", err);
+    return res.status(500).json({ error: "Erreur serveur", details: err.message });
   }
-};
+}
 
-/**
- * Récupérer mes demandes de retrait
- */
-export const getMyWithdrawals = async (req, res) => {
+// ✅ Voir mes retraits (vendeur)
+export async function getMyWithdrawals(req, res) {
   try {
-    const userId = req.user.id;
-
+    const userId = req.user.sub;
     const { data, error } = await supabase
       .from("withdrawals")
-      .select("*")
+      .select("*, payment_providers(name)")
       .eq("user_id", userId)
       .order("created_at", { ascending: false });
 
     if (error) throw error;
 
-    res.json(data);
+    return res.json({ withdrawals: data });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("Get my withdrawals error:", err);
+    return res.status(500).json({ error: "Erreur serveur", details: err.message });
   }
-};
+}
 
-/**
- * Récupérer toutes les demandes (ADMIN)
- */
-export const getAllWithdrawals = async (req, res) => {
+// ✅ Admin : voir toutes les demandes de retrait
+export async function getAllWithdrawals(req, res) {
   try {
-    if (req.user.role !== "admin") {
+    if (!req.user.is_super_admin) {
       return res.status(403).json({ error: "Accès refusé" });
     }
 
     const { data, error } = await supabase
       .from("withdrawals")
-      .select(`
-        *,
-        users ( email )
-      `)
+      .select("*, users(username, phone), payment_providers(name)")
       .order("created_at", { ascending: false });
 
     if (error) throw error;
 
-    res.json(data);
+    return res.json({ withdrawals: data });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("Get all withdrawals error:", err);
+    return res.status(500).json({ error: "Erreur serveur", details: err.message });
   }
-};
+}
 
-/**
- * Valider une demande de retrait (ADMIN)
- */
-export const validateWithdrawal = async (req, res) => {
+// ✅ Admin : valider ou rejeter un retrait
+export async function updateWithdrawalStatus(req, res) {
   try {
-    if (req.user.role !== "admin") {
+    if (!req.user.is_super_admin) {
       return res.status(403).json({ error: "Accès refusé" });
     }
 
     const { id } = req.params;
+    const { status } = req.body; // "approved" ou "rejected"
 
-    const { data, error } = await supabase
+    if (!["approved", "rejected"].includes(status)) {
+      return res.status(400).json({ error: "Statut invalide" });
+    }
+
+    // Vérifier demande existante
+    const { data: withdrawal, error: fetchError } = await supabase
       .from("withdrawals")
-      .update({ status: "approved" })
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (fetchError || !withdrawal) {
+      return res.status(404).json({ error: "Retrait introuvable" });
+    }
+    if (withdrawal.status !== "pending") {
+      return res.status(400).json({ error: "Déjà traité" });
+    }
+
+    // Si approuvé, déduire du wallet
+    if (status === "approved") {
+      const { error: updateWalletError } = await supabase.rpc("decrement_wallet_balance", {
+        user_id: withdrawal.user_id,
+        amount: withdrawal.amount
+      });
+
+      if (updateWalletError) throw updateWalletError;
+    }
+
+    // Mettre à jour le statut
+    const { data: updated, error } = await supabase
+      .from("withdrawals")
+      .update({ status })
       .eq("id", id)
       .select()
       .single();
 
     if (error) throw error;
 
-    res.json({ message: "Retrait validé", withdrawal: data });
+    return res.json({ message: `Retrait ${status} ✅`, withdrawal: updated });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("Update withdrawal status error:", err);
+    return res.status(500).json({ error: "Erreur serveur", details: err.message });
   }
-};
-
-/**
- * Rejeter une demande de retrait (ADMIN)
- */
-export const rejectWithdrawal = async (req, res) => {
-  try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ error: "Accès refusé" });
-    }
-
-    const { id } = req.params;
-
-    const { data, error } = await supabase
-      .from("withdrawals")
-      .update({ status: "rejected" })
-      .eq("id", id)
-      .select()
-      .single();
-
-    if (error) throw error;
-
-    res.json({ message: "Retrait rejeté", withdrawal: data });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-};
+}

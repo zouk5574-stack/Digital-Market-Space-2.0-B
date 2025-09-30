@@ -9,7 +9,10 @@ import orderRoutes from "./routes/order.js";
 import { startOrderCron } from "./cron/orderCron.js";
 import walletRoutes from "./routes/walletRoutes.js";
 import freelanceRoutes from "./routes/freelanceRoutes.js";
+import withdrawalRoutes from "./routes/withdrawalRoutes.js";
 
+// ...
+app.use("/api/withdrawals", withdrawalRoutes);
 app.use("/api/freelance", freelanceRoutes);
 app.use("/api/wallet", walletRoutes);
 // Lancer les crons

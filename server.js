@@ -11,7 +11,10 @@ import walletRoutes from "./routes/walletRoutes.js";
 import freelanceRoutes from "./routes/freelanceRoutes.js";
 import withdrawalRoutes from "./routes/withdrawalRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
+import fedapayRoutes from "./routes/fedapayRoutes.js";
 
+// ...
+app.use("/api/fedapay", fedapayRoutes);
 // ...
 app.use("/api/payments", paymentRoutes);
 // ...

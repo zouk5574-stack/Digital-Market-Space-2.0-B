@@ -5,7 +5,9 @@ import rateLimit from "express-rate-limit";
 import { createClient } from "@supabase/supabase-js";
 import authRoutes from "./routes/auth.js";
 import productRoutes from "./routes/product.js";
+import orderRoutes from "./routes/order.js";
 
+app.use("/api/orders", orderRoutes);
 app.use("/api/products", productRoutes);
 // ... existing server.js content ...
 

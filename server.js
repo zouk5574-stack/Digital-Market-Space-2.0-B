@@ -12,7 +12,9 @@ import freelanceRoutes from "./routes/freelanceRoutes.js";
 import withdrawalRoutes from "./routes/withdrawalRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
 import fedapayRoutes from "./routes/fedapayRoutes.js";
+import paymentProviderRoutes from "./routes/paymentProviderRoutes.js";
 
+app.use("/api/providers", paymentProviderRoutes);
 // ...
 app.use("/api/fedapay", fedapayRoutes);
 // ...

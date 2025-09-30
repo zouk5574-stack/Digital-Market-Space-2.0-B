@@ -14,7 +14,11 @@ import withdrawalRoutes from "./routes/withdrawalRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
 import fedapayRoutes from "./routes/fedapayRoutes.js";
 import paymentProviderRoutes from "./routes/paymentProviderRoutes.js";
+import { startPaymentCron } from "./cron/paymentCron.js";
 
+// 👉 Start crons
+startOrderCron();
+startPaymentCron();
 // Cron jobs
 import { startOrderCron } from "./cron/orderCron.js";
 

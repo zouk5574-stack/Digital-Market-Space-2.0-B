@@ -1,20 +1,24 @@
 import express from "express";
+import { authMiddleware } from "../middlewares/authMiddleware.js";
 import {
   createFreelanceMission,
   applyToMission,
   deliverWork,
   validateDelivery
 } from "../controllers/freelanceController.js";
-import { authenticateToken } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
-// Missions freelance
-router.post("/missions", authenticateToken, createFreelanceMission);
-router.post("/apply", authenticateToken, applyToMission);
+// ✅ Créer mission
+router.post("/missions", authMiddleware, createFreelanceMission);
 
-// Livraison
-router.post("/deliver", authenticateToken, deliverWork);
-router.post("/validate", authenticateToken, validateDelivery);
+// ✅ Postuler à mission
+router.post("/applications", authMiddleware, applyToMission);
+
+// ✅ Livrer mission
+router.post("/deliveries", authMiddleware, deliverWork);
+
+// ✅ Valider livraison
+router.post("/deliveries/validate", authMiddleware, validateDelivery);
 
 export default router;

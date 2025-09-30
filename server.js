@@ -7,7 +7,9 @@ import authRoutes from "./routes/auth.js";
 import productRoutes from "./routes/product.js";
 import orderRoutes from "./routes/order.js";
 import { startOrderCron } from "./cron/orderCron.js";
+import walletRoutes from "./routes/walletRoutes.js";
 
+app.use("/api/wallet", walletRoutes);
 // Lancer les crons
 startOrderCron();
 app.use("/api/orders", orderRoutes);

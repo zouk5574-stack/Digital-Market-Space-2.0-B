@@ -3,10 +3,11 @@ import dotenv from "dotenv";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import { createClient } from "@supabase/supabase-js";
+
+// Import routes
 import authRoutes from "./routes/auth.js";
 import productRoutes from "./routes/product.js";
 import orderRoutes from "./routes/order.js";
-import { startOrderCron } from "./cron/orderCron.js";
 import walletRoutes from "./routes/walletRoutes.js";
 import freelanceRoutes from "./routes/freelanceRoutes.js";
 import withdrawalRoutes from "./routes/withdrawalRoutes.js";
@@ -14,24 +15,8 @@ import paymentRoutes from "./routes/paymentRoutes.js";
 import fedapayRoutes from "./routes/fedapayRoutes.js";
 import paymentProviderRoutes from "./routes/paymentProviderRoutes.js";
 
-app.use("/api/providers", paymentProviderRoutes);
-// ...
-app.use("/api/fedapay", fedapayRoutes);
-// ...
-app.use("/api/payments", paymentRoutes);
-// ...
-app.use("/api/withdrawals", withdrawalRoutes);
-app.use("/api/freelance", freelanceRoutes);
-app.use("/api/wallet", walletRoutes);
-// Lancer les crons
-startOrderCron();
-app.use("/api/orders", orderRoutes);
-app.use("/api/products", productRoutes);
-// ... existing server.js content ...
-
-app.use("/api/auth", authRoutes);
-
-// keep the rest and start server
+// Cron jobs
+import { startOrderCron } from "./cron/orderCron.js";
 
 // Load env vars
 dotenv.config();
@@ -60,6 +45,20 @@ export const supabase = createClient(
 app.get("/", (req, res) => {
   res.send("🚀 Digital Market Space Backend is running!");
 });
+
+// 👉 Register routes
+app.use("/api/auth", authRoutes);
+app.use("/api/products", productRoutes);
+app.use("/api/orders", orderRoutes);
+app.use("/api/wallet", walletRoutes);
+app.use("/api/freelance", freelanceRoutes);
+app.use("/api/withdrawals", withdrawalRoutes);
+app.use("/api/payments", paymentRoutes);
+app.use("/api/fedapay", fedapayRoutes);
+app.use("/api/providers", paymentProviderRoutes);
+
+// 👉 Start crons
+startOrderCron();
 
 // Start server
 const PORT = process.env.PORT || 5000;

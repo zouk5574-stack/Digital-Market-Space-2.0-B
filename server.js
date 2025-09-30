@@ -10,7 +10,10 @@ import { startOrderCron } from "./cron/orderCron.js";
 import walletRoutes from "./routes/walletRoutes.js";
 import freelanceRoutes from "./routes/freelanceRoutes.js";
 import withdrawalRoutes from "./routes/withdrawalRoutes.js";
+import paymentRoutes from "./routes/paymentRoutes.js";
 
+// ...
+app.use("/api/payments", paymentRoutes);
 // ...
 app.use("/api/withdrawals", withdrawalRoutes);
 app.use("/api/freelance", freelanceRoutes);

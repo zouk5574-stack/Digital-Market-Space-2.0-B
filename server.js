@@ -16,7 +16,10 @@ import fedapayRoutes from "./routes/fedapayRoutes.js";
 import paymentProviderRoutes from "./routes/paymentProviderRoutes.js";
 import { startPaymentCron } from "./cron/paymentCron.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
+import statsRoutes from "./routes/statsRoutes.js";
 
+// ...
+app.use("/api/stats", statsRoutes);
 // ...
 app.use("/api/notifications", notificationRoutes);
 // 👉 Start crons

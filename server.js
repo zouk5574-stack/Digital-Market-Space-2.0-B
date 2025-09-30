@@ -17,7 +17,10 @@ import paymentProviderRoutes from "./routes/paymentProviderRoutes.js";
 import { startPaymentCron } from "./cron/paymentCron.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
 import statsRoutes from "./routes/statsRoutes.js";
+import logRoutes from "./routes/logRoutes.js";
 
+// ...
+app.use("/api/logs", logRoutes);
 // ...
 app.use("/api/stats", statsRoutes);
 // ...

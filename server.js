@@ -4,7 +4,9 @@ import cors from "cors";
 import rateLimit from "express-rate-limit";
 import { createClient } from "@supabase/supabase-js";
 import authRoutes from "./routes/auth.js";
+import productRoutes from "./routes/product.js";
 
+app.use("/api/products", productRoutes);
 // ... existing server.js content ...
 
 app.use("/api/auth", authRoutes);

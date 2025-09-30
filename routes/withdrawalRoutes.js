@@ -6,23 +6,23 @@ import {
   validateWithdrawal,
   rejectWithdrawal,
 } from "../controllers/withdrawalController.js";
-import { protect } from "../middleware/authMiddleware.js";
+import { protect, isAdmin, isSeller } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
-// 👉 Créer une demande de retrait
-router.post("/", protect, createWithdrawal);
+// 👉 Créer une demande de retrait (SELLER uniquement)
+router.post("/", protect, isSeller, createWithdrawal);
 
-// 👉 Récupérer mes retraits
-router.get("/me", protect, getMyWithdrawals);
+// 👉 Récupérer mes retraits (SELLER uniquement)
+router.get("/me", protect, isSeller, getMyWithdrawals);
 
 // 👉 ADMIN : voir toutes les demandes
-router.get("/", protect, getAllWithdrawals);
+router.get("/", protect, isAdmin, getAllWithdrawals);
 
 // 👉 ADMIN : valider une demande
-router.put("/:id/approve", protect, validateWithdrawal);
+router.put("/:id/approve", protect, isAdmin, validateWithdrawal);
 
 // 👉 ADMIN : rejeter une demande
-router.put("/:id/reject", protect, rejectWithdrawal);
+router.put("/:id/reject", protect, isAdmin, rejectWithdrawal);
 
 export default router;

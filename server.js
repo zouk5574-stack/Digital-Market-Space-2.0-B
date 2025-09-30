@@ -3,6 +3,13 @@ import dotenv from "dotenv";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import { createClient } from "@supabase/supabase-js";
+import authRoutes from "./routes/auth.js";
+
+// ... existing server.js content ...
+
+app.use("/api/auth", authRoutes);
+
+// keep the rest and start server
 
 // Load env vars
 dotenv.config();

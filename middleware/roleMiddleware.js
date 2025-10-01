@@ -1,28 +1,47 @@
 // middleware/roleMiddleware.js
+// Vérifie si l'utilisateur connecté possède le rôle requis
+// Utilise req.user (attaché par authMiddleware)
 
-export function isAdmin(req, res, next) {
-  // admin by flag OR role string
-  const isSuper = req.user?.is_super_admin || req.user?.db?.is_super_admin;
-  const role = req.user?.db?.role;
-  if (isSuper || role === "admin" || role === "administrator") {
-    return next();
-  }
-  return res.status(403).json({ error: "Admin only" });
+export function requireRole(requiredRole) {
+  return (req, res, next) => {
+    try {
+      if (!req.user || !req.user.db) {
+        return res.status(401).json({ error: "Authentification requise" });
+      }
+
+      // Cas spécial : super admin -> accès illimité
+      if (req.user.is_super_admin) {
+        return next();
+      }
+
+      // Vérifie le rôle
+      const userRole = req.user.db.role || req.user.role;
+      if (userRole !== requiredRole) {
+        return res.status(403).json({ error: `Accès refusé : rôle ${requiredRole} requis` });
+      }
+
+      return next();
+    } catch (err) {
+      console.error("requireRole error:", err);
+      return res.status(500).json({ error: "Erreur lors de la vérification du rôle" });
+    }
+  };
 }
 
-export function isSeller(req, res, next) {
-  const isSuper = req.user?.is_super_admin || req.user?.db?.is_super_admin;
-  const role = req.user?.db?.role;
-  if (isSuper || role === "seller" || role === "vendor") {
-    return next();
-  }
-  return res.status(403).json({ error: "Seller only" });
-}
+// Vérifie si l'utilisateur est super admin
+export function requireSuperAdmin(req, res, next) {
+  try {
+    if (!req.user || !req.user.db) {
+      return res.status(401).json({ error: "Authentification requise" });
+    }
 
-export function isBuyer(req, res, next) {
-  const role = req.user?.db?.role;
-  if (role === "buyer" || role === "client" || req.user?.db?.is_super_admin) {
+    if (!req.user.is_super_admin) {
+      return res.status(403).json({ error: "Accès refusé : super admin requis" });
+    }
+
     return next();
+  } catch (err) {
+    console.error("requireSuperAdmin error:", err);
+    return res.status(500).json({ error: "Erreur lors de la vérification du super admin" });
   }
-  return res.status(403).json({ error: "Buyer only" });
 }

@@ -1,9 +1,9 @@
-import { supabase } from "../server.js";
+  import { supabase } from "../server.js";
 
 // ✅ Créer une mission freelance (côté acheteur)
 export async function createFreelanceMission(req, res) {
   try {
-    const buyerId = req.user.sub;
+    const buyerId = req.user.db.id;
     const { title, description, budget, deadline, category } = req.body;
 
     if (!title || !description || !budget) {
@@ -33,10 +33,10 @@ export async function createFreelanceMission(req, res) {
   }
 }
 
-// ✅ Postuler à une mission (côté vendeur)
+// ✅ Postuler à une mission (côté freelancer)
 export async function applyToMission(req, res) {
   try {
-    const sellerId = req.user.sub;
+    const freelancerId = req.user.db.id;
     const { mission_id, proposal, proposed_price } = req.body;
 
     if (!mission_id || !proposal) {
@@ -47,7 +47,7 @@ export async function applyToMission(req, res) {
       .from("freelance_applications")
       .insert([{
         mission_id,
-        seller_id: sellerId,
+        freelancer_id: freelancerId,
         proposal,
         proposed_price
       }])
@@ -63,10 +63,10 @@ export async function applyToMission(req, res) {
   }
 }
 
-// ✅ Livraison finale par le vendeur
+// ✅ Livraison finale par le freelancer
 export async function deliverWork(req, res) {
   try {
-    const sellerId = req.user.sub;
+    const freelancerId = req.user.db.id;
     const { mission_id, delivery_note, file_url } = req.body;
 
     if (!mission_id || !delivery_note) {
@@ -77,7 +77,7 @@ export async function deliverWork(req, res) {
       .from("freelance_deliveries")
       .insert([{
         mission_id,
-        seller_id: sellerId,
+        freelancer_id: freelancerId,
         delivery_note,
         file_url,
         status: "delivered"
@@ -94,15 +94,15 @@ export async function deliverWork(req, res) {
   }
 }
 
-// ✅ Validation par l'acheteur
+// ✅ Validation par l’acheteur
 export async function validateDelivery(req, res) {
   try {
-    const buyerId = req.user.sub;
+    const buyerId = req.user.db.id;
     const { delivery_id } = req.body;
 
     const { data: delivery, error: fetchError } = await supabase
       .from("freelance_deliveries")
-      .select("mission_id, seller_id, status")
+      .select("mission_id, freelancer_id, status")
       .eq("id", delivery_id)
       .single();
 
@@ -110,7 +110,7 @@ export async function validateDelivery(req, res) {
       return res.status(404).json({ error: "Livraison introuvable" });
     }
 
-    // Vérifier que la mission appartient bien à l'acheteur
+    // Vérifier que la mission appartient bien à l’acheteur
     const { data: mission, error: missionError } = await supabase
       .from("freelance_missions")
       .select("buyer_id, budget")
@@ -127,9 +127,9 @@ export async function validateDelivery(req, res) {
       .update({ status: "validated" })
       .eq("id", delivery_id);
 
-    // Libérer les fonds au vendeur
+    // Libérer les fonds au freelancer
     await supabase.rpc("increment_wallet_balance", {
-      user_id: delivery.seller_id,
+      user_id: delivery.freelancer_id,
       amount: mission.budget
     });
 
@@ -138,4 +138,4 @@ export async function validateDelivery(req, res) {
     console.error("Validate delivery error:", err);
     return res.status(500).json({ error: "Erreur serveur", details: err.message || err });
   }
-      }
+}

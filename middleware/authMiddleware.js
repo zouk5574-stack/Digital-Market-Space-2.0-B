@@ -1,33 +1,42 @@
 // middleware/authMiddleware.js
+// Un middleware unique et compatible avec tout le projet:
+// - exporte `authenticateJWT` (compatibilité)
+// - exporte `protect` (alias utilisé dans tes routes)
+// - attache req.user (payload) et req.user.db (ligne users depuis Supabase)
 import jwt from "jsonwebtoken";
 import { supabase } from "../server.js";
 
-const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_SECRET = process.env.JWT_SECRET || "CHANGE_ME";
 
 /**
- * authenticateJWT: vérifie le token et attache req.user
- * protect: alias pour compatibilité (nom utilisé dans routes)
+ * authenticateJWT: vérifie le token et attache req.user + req.user.db
  */
 export async function authenticateJWT(req, res, next) {
   try {
-    const authHeader = req.headers.authorization;
+    const authHeader = req.headers.authorization || req.headers.Authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ error: "Missing token" });
+      return res.status(401).json({ error: "Missing or malformed Authorization header" });
     }
 
     const token = authHeader.split(" ")[1];
-    const payload = jwt.verify(token, JWT_SECRET);
+    let payload;
+    try {
+      payload = jwt.verify(token, JWT_SECRET);
+    } catch (err) {
+      console.error("JWT verify error:", err);
+      return res.status(401).json({ error: "Invalid or expired token" });
+    }
 
-    // payload should contain sub (user id), role_id, is_super_admin
+    // Attach minimal payload
     req.user = {
       sub: payload.sub,
       role_id: payload.role_id,
       is_super_admin: payload.is_super_admin === true || payload.is_super_admin === "true",
-      // keep the raw token payload for reference
-      jwt_payload: payload,
+      jwt_payload: payload
     };
 
-    // Attach latest user row (minimal) to req.user.db
+    // Fetch the latest user row from Supabase and attach as req.user.db
+    // This ensures role checks can use req.user.db.role or req.user.db.is_super_admin
     const { data: userRow, error } = await supabase
       .from("users")
       .select("id, role, role_id, is_super_admin, admin_username, email")
@@ -37,19 +46,24 @@ export async function authenticateJWT(req, res, next) {
 
     if (error) {
       console.error("authMiddleware: error fetching user row:", error);
-      return res.status(401).json({ error: "Invalid token user" });
+      return res.status(401).json({ error: "Unable to validate token user" });
     }
     if (!userRow) {
       return res.status(401).json({ error: "Invalid token user" });
     }
 
     req.user.db = userRow;
-    next();
+
+    // keep backward compatibility: some code expects req.user.role or req.user.is_super_admin directly
+    req.user.role = req.user.db.role;
+    req.user.is_super_admin = req.user.is_super_admin || req.user.db.is_super_admin;
+
+    return next();
   } catch (err) {
-    console.error("authenticateJWT error:", err);
-    return res.status(401).json({ error: "Invalid or expired token" });
+    console.error("authenticateJWT unexpected error:", err);
+    return res.status(500).json({ error: "Authentication error" });
   }
 }
 
-// alias naming used by many routes
+// Alias utilisé dans tes routes (beaucoup de fichiers importent `protect`)
 export const protect = authenticateJWT;

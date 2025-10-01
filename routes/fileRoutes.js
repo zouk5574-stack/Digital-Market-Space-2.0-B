@@ -1,27 +1,35 @@
 // routes/fileRoutes.js
 import express from "express";
 import multer from "multer";
-import { authenticateJWT } from "../middleware/authMiddleware.js";
 import {
   uploadFile,
   getFileDownloadUrl,
   deleteFile,
-  listFilesForProduct
+  listFilesForProduct,
 } from "../controllers/fileController.js";
+import { protect } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage() });
 
-// SELLER upload file for product
-router.post("/upload", authenticateJWT, upload.single("file"), uploadFile);
+// ⚡ Multer memory storage (pas de fichier temporaire sur disque)
+const storage = multer.memoryStorage();
+const upload = multer({ storage });
 
-// Seller list files for his product
-router.get("/product/:productId", authenticateJWT, listFilesForProduct);
+// 👉 Upload fichier pour un produit (vendeur ou admin)
+router.post(
+  "/upload",
+  protect,
+  upload.single("file"), // champ "file" en multipart/form-data
+  uploadFile
+);
 
-// Download file (signed URL) - buyer/seller/admin with authorization checked in controller
-router.get("/:id/download", authenticateJWT, getFileDownloadUrl);
+// 👉 Lister fichiers d’un produit (owner/admin)
+router.get("/product/:productId", protect, listFilesForProduct);
 
-// Delete file (owner or admin)
-router.delete("/:id", authenticateJWT, deleteFile);
+// 👉 Générer URL de téléchargement (acheteur avec commande valide, owner, admin)
+router.get("/download/:id", protect, getFileDownloadUrl);
+
+// 👉 Supprimer fichier (owner ou admin)
+router.delete("/:id", protect, deleteFile);
 
 export default router;

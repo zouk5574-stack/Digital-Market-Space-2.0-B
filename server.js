@@ -19,6 +19,8 @@ import notificationRoutes from "./routes/notificationRoutes.js";
 import statsRoutes from "./routes/statsRoutes.js";
 import logRoutes from "./routes/logRoutes.js";
 import fileRoutes from "./routes/fileRoutes.js";
+import { startCleanupFilesCron } from "./cron/cleanupFilesCron.js";
+startCleanupFilesCron();
 app.use("/api/files", fileRoutes);
 // ...
 app.use("/api/logs", logRoutes);

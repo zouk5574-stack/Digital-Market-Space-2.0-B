@@ -43,6 +43,7 @@ import notificationRoutes from "./routes/notificationRoutes.js";
 import statsRoutes from "./routes/statsRoutes.js";
 import logRoutes from "./routes/logRoutes.js";
 import fileRoutes from "./routes/fileRoutes.js";
+import { authMiddleware } from "../middleware/authMiddleware.js";
 
 // =========================
 // 🕒 CRON JOBS IMPORTS

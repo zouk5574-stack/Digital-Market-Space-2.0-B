@@ -9,16 +9,16 @@ import {
 
 const router = express.Router();
 
-// ✅ Créer mission
+// ✅ Créer une mission freelance
 router.post("/missions", authMiddleware, createFreelanceMission);
 
-// ✅ Postuler à mission
+// ✅ Postuler à une mission
 router.post("/applications", authMiddleware, applyToMission);
 
-// ✅ Livrer mission
+// ✅ Livrer un travail
 router.post("/deliveries", authMiddleware, deliverWork);
 
-// ✅ Valider livraison
-router.post("/deliveries/validate", authMiddleware, validateDelivery);
+// ✅ Valider une livraison (acheteur)
+router.put("/deliveries/:id/validate", authMiddleware, validateDelivery);
 
 export default router;

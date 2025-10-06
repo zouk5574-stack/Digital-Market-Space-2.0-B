@@ -1,11 +1,11 @@
 import express from "express";
-import { authMiddleware } from "../middlewares/authMiddleware.js";
+import { authMiddleware } from "./middlewares/authMiddleware.js";
 import {
   createFreelanceMission,
   applyToMission,
   deliverWork,
   validateDelivery
-} from "../controllers/freelanceController.js";
+} from "./controllers/freelanceController.js";
 
 const router = express.Router();
 

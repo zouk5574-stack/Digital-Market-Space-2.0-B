@@ -5,17 +5,21 @@ import {
   getAllProviders,
   getActiveProvider,
   updateProvider,
-  deleteProvider
+  deleteProvider,
 } from "../controllers/paymentProviderController.js";
-import { authMiddleware } from "../middleware/authMiddleware.js";
+
+// ✅ On importe la bonne version du middleware (chemin correct et cohérent)
+import { authenticateJWT as authMiddleware } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
-// ✅ Public : récupérer le provider actif (ex: Fedapay public_key)
+// ✅ Route publique : récupération du provider actif (ex: Fedapay public_key)
 router.get("/active", getActiveProvider);
 
-// ✅ Admin uniquement
+// ✅ Toutes les routes suivantes nécessitent une authentification (admin)
 router.use(authMiddleware);
+
+// ✅ CRUD admin
 router.post("/", createProvider);
 router.get("/", getAllProviders);
 router.put("/:id", updateProvider);

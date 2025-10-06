@@ -7,7 +7,7 @@ import {
   updateProvider,
   deleteProvider
 } from "../controllers/paymentProviderController.js";
-import { authMiddleware } from "../middlewares/authMiddleware.js";
+import { authMiddleware } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 

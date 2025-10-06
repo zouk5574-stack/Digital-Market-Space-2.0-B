@@ -1,8 +1,4 @@
 // middleware/authMiddleware.js
-// Un middleware unique et compatible avec tout le projet:
-// - exporte `authenticateJWT` (compatibilité)
-// - exporte `protect` (alias utilisé dans tes routes)
-// - attache req.user (payload) et req.user.db (ligne users depuis Supabase)
 import jwt from "jsonwebtoken";
 import { supabase } from "../server.js";
 
@@ -27,7 +23,6 @@ export async function authenticateJWT(req, res, next) {
       return res.status(401).json({ error: "Invalid or expired token" });
     }
 
-    // Attach minimal payload
     req.user = {
       sub: payload.sub,
       role_id: payload.role_id,
@@ -35,8 +30,6 @@ export async function authenticateJWT(req, res, next) {
       jwt_payload: payload
     };
 
-    // Fetch the latest user row from Supabase and attach as req.user.db
-    // This ensures role checks can use req.user.db.role or req.user.db.is_super_admin
     const { data: userRow, error } = await supabase
       .from("users")
       .select("id, role, role_id, is_super_admin, admin_username, email")
@@ -53,8 +46,6 @@ export async function authenticateJWT(req, res, next) {
     }
 
     req.user.db = userRow;
-
-    // keep backward compatibility: some code expects req.user.role or req.user.is_super_admin directly
     req.user.role = req.user.db.role;
     req.user.is_super_admin = req.user.is_super_admin || req.user.db.is_super_admin;
 
@@ -65,5 +56,6 @@ export async function authenticateJWT(req, res, next) {
   }
 }
 
-// Alias utilisé dans tes routes (beaucoup de fichiers importent `protect`)
+// Alias utilisés ailleurs dans le projet
 export const protect = authenticateJWT;
+export const authMiddleware = authenticateJWT; // ✅ Compatibilité complète

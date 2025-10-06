@@ -5,7 +5,7 @@ import {
   applyToMission,
   deliverWork,
   validateDelivery
-} from "./controllers/freelanceController.js";
+} from "../controllers/freelanceController.js";
 
 const router = express.Router();
 

@@ -3,7 +3,7 @@ import dotenv from "dotenv";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import { createClient } from "@supabase/supabase-js";
-import { authMiddleware } from "./middleware/authMiddleware.js";
+import { authMiddleware } from "../middleware/authMiddleware.js";
 
 // Load env vars
 dotenv.config();

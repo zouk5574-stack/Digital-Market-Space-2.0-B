@@ -3,33 +3,31 @@ import dotenv from "dotenv";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import { createClient } from "@supabase/supabase-js";
-import { authMiddleware } from "../middleware/authMiddleware.js";
+import { authMiddleware } from "./middleware/authMiddleware.js"; // ✅ corrigé
 
-// Load env vars
 dotenv.config();
 
-// Init Express
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ Rate limiting (anti-abus, configurable)
+// ✅ Limiteur de requêtes
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 15 * 60 * 1000,
   max: 100,
   standardHeaders: true,
   legacyHeaders: false,
 });
 app.use(limiter);
 
-// ✅ Supabase client (accessible partout)
+// ✅ Supabase client
 export const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
 
 // =========================
-// 🔗 ROUTES IMPORTS
+// 🔗 ROUTES
 // =========================
 import authRoutes from "./routes/auth.js";
 import productRoutes from "./routes/product.js";
@@ -46,7 +44,7 @@ import logRoutes from "./routes/logRoutes.js";
 import fileRoutes from "./routes/fileRoutes.js";
 
 // =========================
-// 🕒 CRON JOBS IMPORTS
+// 🕒 CRONS
 // =========================
 import { startOrderCron } from "./cron/orderCron.js";
 import { startPaymentCron } from "./cron/paymentCron.js";

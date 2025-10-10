@@ -1,4 +1,4 @@
-// controllers/statsController.js
+// src/controllers/statsController.js (FINALISÉ)
 
 import { supabase } from "../server.js";
 import ExcelJS from "exceljs";
@@ -9,9 +9,8 @@ import PDFDocument from "pdfkit";
 // =====================================
 export async function getAdminStats(req, res) {
   try {
-    // ⚠️ La vérification des droits d'ADMIN est faite par le middleware requireRole sur la route /admin
-    // Nous pouvons donc supprimer la vérification manuelle ici.
-    
+    // ⚠️ La vérification des droits d'ADMIN est faite par le middleware requireRole
+
     // Total users
     const userCountPromise = supabase
       .from("users")
@@ -30,10 +29,12 @@ export async function getAdminStats(req, res) {
       .select("*", { count: "exact", head: true })
       .then(res => res.count);
 
-    // Total payments confirmés (Revenue)
-    const paymentsPromise = supabase
-      .from("payments")
-      .select("amount, status")
+    // Total paiements confirmés (Revenue brut total) & Commissions (Revenu net plateforme)
+    // ➡️ COHÉRENCE : Utilisation de la table 'orders' pour les commandes complétées
+    const completedOrdersPromise = supabase
+      .from("orders")
+      .select("total_price, commission")
+      .eq("status", "completed")
       .then(res => res.data);
 
     // Withdrawals en attente
@@ -54,24 +55,30 @@ export async function getAdminStats(req, res) {
         userCount, 
         productCount, 
         orderCount, 
-        payments, 
+        completedOrders, 
         pendingWithdrawals, 
         openDisputes
     ] = await Promise.all([
         userCountPromise, 
         productCountPromise, 
         orderCountPromise, 
-        paymentsPromise, 
+        completedOrdersPromise, 
         pendingWithdrawalsPromise, 
         openDisputesPromise
     ]);
-    
-    // Calcul de la Revenue
-    const confirmedPayments = payments?.filter((p) => p.status === "confirmed") || [];
-    const totalRevenue = confirmedPayments.reduce(
-      (sum, p) => sum + Number(p.amount),
+
+    // Calcul de la Revenue Brute Totale (valeur de toutes les ventes)
+    const totalGrossRevenue = completedOrders?.reduce(
+      (sum, o) => sum + Number(o.total_price || 0),
       0
-    );
+    ) || 0;
+    
+    // Calcul de la Commission Totale (Revenu NET de la plateforme)
+    const totalNetCommission = completedOrders?.reduce(
+      (sum, o) => sum + Number(o.commission || 0),
+      0
+    ) || 0;
+
 
     return res.json({
       success: true,
@@ -79,7 +86,8 @@ export async function getAdminStats(req, res) {
           users: userCount || 0,
           products: productCount || 0,
           orders: orderCount || 0,
-          revenue: totalRevenue,
+          totalGrossRevenue: totalGrossRevenue, // Toutes les ventes complétées
+          totalNetCommission: totalNetCommission, // Revenue de la plateforme
           pendingWithdrawals: pendingWithdrawals || 0,
           openDisputes: openDisputes || 0,
       }
@@ -97,13 +105,12 @@ export async function getAdminStats(req, res) {
 // ------------------------------------
 export async function getStats(req, res) {
   try {
-    // ➡️ COHÉRENCE : Récupérer l'ID utilisateur
     const userId = req.user.db.id; 
-    
+
     // Stats 1: Mes Ventes (Commandes pour mes produits)
     const salesPromise = supabase
         .from("orders")
-        .select("total_price, commission, status")
+        .select("total_price, commission, seller_earning, status") // Ajout de seller_earning
         .eq("seller_id", userId);
 
     // Stats 2: Mes Achats (Commandes que j'ai passées)
@@ -112,7 +119,7 @@ export async function getStats(req, res) {
         .select("total_price, status")
         .eq("buyer_id", userId);
 
-    // Stats 3: Mon Portefeuille (Transactions liées)
+    // Stats 3: Mon Portefeuille (Solde actuel)
     const walletBalancePromise = supabase
         .from("wallets")
         .select("balance")
@@ -137,8 +144,9 @@ export async function getStats(req, res) {
     const totalSalesRevenue = completedSales.reduce(
         (sum, o) => sum + Number(o.total_price || 0), 0
     );
-    const totalCommissionsEarned = completedSales.reduce(
-        (sum, o) => sum + Number(o.commission || 0), 0
+    // ➡️ Correction : Total des GAINS du vendeur (seller_earning)
+    const totalSellerEarnings = completedSales.reduce(
+        (sum, o) => sum + Number(o.seller_earning || 0), 0
     );
 
     return res.json({
@@ -146,8 +154,8 @@ export async function getStats(req, res) {
       stats: {
           walletBalance: walletBalance,
           salesCount: salesResult.data?.length || 0,
-          totalRevenue: totalSalesRevenue,
-          totalCommissions: totalCommissionsEarned,
+          totalSalesRevenue: totalSalesRevenue, // Valeur brute de ce que j'ai vendu
+          totalSellerEarnings: totalSellerEarnings, // Mon revenu net après commission
           purchasesCount: purchasesResult.data?.length || 0,
           successfulPurchasesCount: successfulPurchases.length,
       }
@@ -167,30 +175,31 @@ export async function getStats(req, res) {
 export async function exportStatsExcel(req, res) {
   try {
     // ⚠️ La vérification des droits d'ADMIN est faite par le middleware requireRole
-    
-    // Récup stats complètes (plus large que votre exemple pour être utile)
+
+    // Récup stats complètes 
     const [ordersRes, usersRes, withdrawalsRes] = await Promise.all([
-        supabase.from("orders").select("id,total_price,commission,status,created_at, buyer_id, seller_id"),
+        supabase.from("orders").select("id,total_price,commission,seller_earning,status,created_at, buyer_id, seller_id"),
         supabase.from("users").select("id,username,email,role,created_at"),
         supabase.from("withdrawals").select("id,amount,status,created_at, user_id"),
     ]);
-    
+
     const orders = ordersRes.data || [];
     const users = usersRes.data || [];
     const withdrawals = withdrawalsRes.data || [];
 
     const workbook = new ExcelJS.Workbook();
-    
-    // Feuille 1 : Vue Synthèse
+
+    // Feuille 1 : Vue Synthèse des Opérations
     const sheetSynth = workbook.addWorksheet("Synthèse Opérations");
 
     sheetSynth.columns = [
-      { header: "ID", key: "id", width: 10 },
+      { header: "ID", key: "id", width: 32 },
       { header: "Type", key: "type", width: 15 },
-      { header: "Montant", key: "amount", width: 15 },
+      { header: "Montant Brute", key: "amount", width: 18 },
+      { header: "Com. Plat.", key: "commission", width: 15 },
+      { header: "Gain Vendeur", key: "seller_earning", width: 18 },
       { header: "Statut", key: "status", width: 15 },
       { header: "Date", key: "date", width: 20 },
-      { header: "Commission", key: "commission", width: 15 },
     ];
 
     orders.forEach((o) => {
@@ -198,9 +207,10 @@ export async function exportStatsExcel(req, res) {
         id: o.id,
         type: "Commande",
         amount: o.total_price,
+        commission: o.commission,
+        seller_earning: o.seller_earning,
         status: o.status,
         date: o.created_at,
-        commission: o.commission
       });
     });
 
@@ -208,13 +218,14 @@ export async function exportStatsExcel(req, res) {
       sheetSynth.addRow({
         id: w.id,
         type: "Retrait",
-        amount: w.amount,
+        amount: w.amount * -1, // Montant négatif pour les retraits
+        commission: 0,
+        seller_earning: w.amount * -1, 
         status: w.status,
         date: w.created_at,
-        commission: 0
       });
     });
-    
+
     // Feuille 2 : Utilisateurs
     const sheetUsers = workbook.addWorksheet("Utilisateurs");
     sheetUsers.columns = [
@@ -250,7 +261,7 @@ export async function exportStatsExcel(req, res) {
 export async function exportStatsPDF(req, res) {
   try {
     // ⚠️ La vérification des droits d'ADMIN est faite par le middleware requireRole
-    
+
     const { data: orders } = await supabase.from("orders").select(
       "id,total_price,status,created_at"
     );
@@ -270,7 +281,7 @@ export async function exportStatsPDF(req, res) {
     doc.moveDown();
 
     doc.fontSize(14).text("📊 Commandes :", { underline: true });
-    
+
     // Affichage des commandes (pourrait être amélioré avec des tableaux PDFKit)
     orders?.forEach((o) => {
       doc
@@ -287,4 +298,4 @@ export async function exportStatsPDF(req, res) {
       .status(500)
       .json({ error: "Erreur export PDF", details: err.message });
   }
-      }
+}

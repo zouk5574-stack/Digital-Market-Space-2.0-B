@@ -1,4 +1,4 @@
-// src/server.js (VERSION FINALE POUR LE LANCEMENT)
+// src/server.js (VERSION FINALE ET CORRIGÉE POUR LE LANCEMENT)
 
 import express from "express";
 import cors from "cors";
@@ -64,7 +64,7 @@ app.use(express.urlencoded({ extended: true }));
 // 3. Importation des Routeurs
 // -----------------------------------------------------
 
-import authRouter from "./routes/authRoutes.js"; // Chemin OK : ./routes/ est dans src/
+import authRouter from "./routes/authRoutes.js";
 import productRouter from "./routes/productRoutes.js";
 import orderRouter from "./routes/orderRoutes.js";
 import walletRouter from "./routes/walletRoutes.js";
@@ -75,7 +75,7 @@ import paymentProviderRouter from "./routes/paymentProviderRoutes.js";
 import notificationRouter from "./routes/notificationRoutes.js";
 import logRouter from "./routes/logRoutes.js";
 import fileRouter from "./routes/fileRoutes.js";
-// ⚠️ Note: Les routes 'stats' et 'payments' sont gérées par adminRoutes et orderRoutes/fedapayRoutes
+import adminRouter from "./routes/adminRoutes.js"; // Importé ici pour la suite
 
 // -----------------------------------------------------
 // 4. Déclaration des Routes
@@ -96,22 +96,18 @@ app.use("/api/providers", paymentProviderRouter);
 app.use("/api/files", fileRouter);
 app.use("/api/logs", logRouter);
 app.use("/api/notifications", notificationRouter);
-
-// ⚠️ Ajout de la route ADMIN qui encapsule stats, logs, etc.
-import adminRouter from "./routes/adminRoutes.js"; 
-app.use("/api/admin", adminRouter);
+app.use("/api/admin", adminRouter); // Ajout de la route ADMIN
 
 
 // -----------------------------------------------------
 // 5. Tâches de Fond (Cron Jobs)
 // -----------------------------------------------------
 
-// ⚡ CORRECTION CRITIQUE DES CHEMINS 
-// Le dossier 'cron' est à la racine, donc on doit remonter d'un niveau (../)
+// ⚡ CHEMINS CORRIGÉS : Remonte d'un niveau (../) pour atteindre le dossier 'cron' à la racine
 import { startOrderCron } from "../cron/orderCron.js"; 
 import { startPaymentCron } from "../cron/paymentCron.js";
 import { startCleanupFilesCron } from "../cron/cleanupFilesCron.js"; 
-import { startWithdrawalCron } from "../cron/withdrawalCron.js"; // ⬅️ Tâche Finale
+import { startWithdrawalCron } from "../cron/withdrawalRoutes.js"; // ⬅️ Tâche Finale
 
 // Tâche CRON 1 : Vérification et auto-validation horaire des commandes
 startOrderCron(); 
@@ -146,6 +142,7 @@ async function checkDbConnection() {
         
         return true;
     } catch (err) {
+        // Cette erreur est TRES PROBABLEMENT celle qui est renvoyée par Vercel
         console.error(`\n-----------------------------------------`);
         console.error(`🚨 ERREUR CRITIQUE DE DÉMARRAGE 🚨`);
         console.error(err.message);
@@ -174,4 +171,3 @@ async function startServer() {
 }
 
 startServer();
-          

@@ -1,4 +1,4 @@
-// controllers/fileController.js
+// controllers/fileController.js (MISE À JOUR)
 
 import { supabase } from "../server.js";
 import { v4 as uuidv4 } from "uuid";
@@ -11,10 +11,10 @@ const ALLOWED_MIMES = (process.env.ALLOWED_MIMES || "image/jpeg,image/png,image/
 
 // -----------------------------
 // 1. Upload file (seller or admin)
+// (Pas de changement)
 // -----------------------------
 export async function uploadFile(req, res) {
   try {
-    // ⬅️ COHÉRENCE : Utiliser req.user.db.id
     const userId = req.user.db.id; 
     const { product_id } = req.body;
 
@@ -41,7 +41,6 @@ export async function uploadFile(req, res) {
 
     if (productError || !product) return res.status(404).json({ error: "Produit introuvable" });
 
-    // ⬅️ COHÉRENCE : Utiliser req.user.db.is_super_admin
     if (product.user_id !== userId && !req.user.db.is_super_admin) { 
       return res.status(403).json({ error: "Accès refusé : vous n'êtes pas le propriétaire du produit" });
     }
@@ -69,7 +68,7 @@ export async function uploadFile(req, res) {
       .from("product_files")
       .insert([{
         product_id,
-        owner_id: userId, // ⬅️ Utilisation de owner_id pour la cohérence
+        owner_id: userId, 
         storage_path: storagePath,
         filename: originalname,
         content_type: mimetype,
@@ -98,7 +97,6 @@ export async function uploadFile(req, res) {
 // -------------------------------------------------------
 export async function getFileDownloadUrl(req, res) {
   try {
-    // ⬅️ COHÉRENCE : Utiliser req.user.db.id
     const requesterId = req.user?.db.id;
     const { id } = req.params; // product_files.id
 
@@ -120,7 +118,6 @@ export async function getFileDownloadUrl(req, res) {
 
     // Authorization checks
     const isOwner = requesterId && requesterId === file.owner_id;
-    // ⬅️ COHÉRENCE : Utiliser req.user.db.is_super_admin
     const isAdmin = req.user?.db.is_super_admin; 
 
     let buyerHasAccess = false;
@@ -133,7 +130,6 @@ export async function getFileDownloadUrl(req, res) {
         .eq("buyer_id", requesterId);
 
       if (!ordersErr && orders && orders.length > 0) {
-        // La commande doit être finalisée pour le téléchargement
         const allowedStatuses = ["completed", "delivered"]; 
         buyerHasAccess = orders.some(o => allowedStatuses.includes(o.status));
       }
@@ -143,8 +139,9 @@ export async function getFileDownloadUrl(req, res) {
       return res.status(403).json({ error: "Accès refusé au téléchargement (Achat non confirmé)." });
     }
 
-    // Create signed URL (default 5 minutes)
-    const ttlSeconds = Number(process.env.DOWNLOAD_URL_TTL_SEC || 300); 
+    // ⭐ CRITIQUE : Création de l'URL signée (TTL 1h30min par défaut)
+    const ONE_HOUR_THIRTY_MINUTES_IN_SECONDS = 5400; // 3600 + 1800
+    const ttlSeconds = Number(process.env.DOWNLOAD_URL_TTL_SEC || ONE_HOUR_THIRTY_MINUTES_IN_SECONDS); 
     const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(file.storage_path, ttlSeconds);
 
     if (error || !data) {
@@ -161,10 +158,10 @@ export async function getFileDownloadUrl(req, res) {
 
 // ---------------------------
 // 3. Delete file (owner or admin)
+// (Pas de changement)
 // ---------------------------
 export async function deleteFile(req, res) {
   try {
-    // ⬅️ COHÉRENCE : Utiliser req.user.db.id
     const userId = req.user.db.id;
     const { id } = req.params;
 
@@ -177,7 +174,6 @@ export async function deleteFile(req, res) {
 
     if (fileErr || !file) return res.status(404).json({ error: "Fichier introuvable" });
 
-    // ⬅️ COHÉRENCE : Utiliser req.user.db.is_super_admin
     if (file.owner_id !== userId && !req.user.db.is_super_admin) {
       return res.status(403).json({ error: "Accès refusé à la suppression" });
     }
@@ -205,10 +201,10 @@ export async function deleteFile(req, res) {
 
 // ---------------------------------
 // 4. List files for a product (owner)
+// (Pas de changement)
 // ---------------------------------
 export async function listFilesForProduct(req, res) {
   try {
-    // ⬅️ COHÉRENCE : Utiliser req.user.db.id
     const userId = req.user.db.id;
     const { productId } = req.params;
 
@@ -222,7 +218,6 @@ export async function listFilesForProduct(req, res) {
 
     if (productErr || !product) return res.status(404).json({ error: "Produit introuvable" });
     
-    // ⬅️ COHÉRENCE : Utiliser req.user.db.is_super_admin
     if (product.user_id !== userId && !req.user.db.is_super_admin) {
       return res.status(403).json({ error: "Accès refusé à la liste des fichiers" });
     }

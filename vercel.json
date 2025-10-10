@@ -1,14 +1,16 @@
 {
+{
   "version": 2,
   "builds": [
     {
-      "src": "server.js",
+      "src": "src/server.js", // ⬅️ Source = src/server.js
       "use": "@vercel/node",
       "config": {
         "maxLambdaSize": "15mb",
         "includeFiles": [
           "package.json",
           "src/**",
+          "cron/**",  // ⬅️ Inclus le dossier cron à la racine
           ".env"
         ]
       }
@@ -17,14 +19,9 @@
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "server.js",
+      "dest": "src/server.js", // ⬅️ Destination = src/server.js
       "methods": [
-        "GET",
-        "POST",
-        "PUT",
-        "DELETE",
-        "PATCH",
-        "OPTIONS"
+        "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"
       ]
     }
   ]

@@ -1,4 +1,5 @@
 // controllers/authController.js
+
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { supabase } from "../server.js";
@@ -6,6 +7,7 @@ import { supabase } from "../server.js";
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES_IN = "30d";
 
+// Fonction d'aide pour récupérer l'ID du rôle par son nom
 async function getRoleIdByName(name) {
   const { data, error } = await supabase
     .from("roles")
@@ -27,18 +29,11 @@ export async function register(req, res) {
       return res.status(400).json({ error: "username, phone and password are required" });
     }
 
-    // Création de la condition OR pour la vérification d'existence
-    let orConditions = [`phone.eq.${phone}`, `username.eq.${username}`];
-    if (email) {
-        orConditions.push(`email.eq.${email}`);
-    }
-    
-    // Vérification d'utilisateur existant par phone, username ou email
+    // CRITIQUE: Vérification d'utilisateur existant par phone, username ou email
     const { data: existingUsers, error: checkError } = await supabase
       .from("users")
       .select("id")
-      // ⬅️ Correction de la syntaxe Supabase OR
-      .or(orConditions.join(',')) 
+      .or(`phone.eq.${phone},username.eq.${username},email.eq.${email}`) 
       .limit(1);
 
     if (checkError) throw checkError;
@@ -47,7 +42,7 @@ export async function register(req, res) {
       return res.status(409).json({ error: "User with same phone/username/email already exists" });
     }
 
-    const roleId = await getRoleIdByName("BUYER"); // ⬅️ Utilisation de la majuscule "BUYER" pour la cohérence
+    const roleId = await getRoleIdByName("ACHETEUR"); // ⬅️ COHÉRENCE : Utiliser "ACHETEUR" au lieu de "BUYER"
     const password_hash = await bcrypt.hash(password, 12);
 
     const { data: inserted, error } = await supabase
@@ -62,7 +57,7 @@ export async function register(req, res) {
         password_hash,
         is_super_admin: false,
         is_commission_exempt: false,
-        is_active: true, // ⬅️ Ajout de is_active par défaut
+        is_active: true, 
         email_confirmed: false
       }])
       .select()
@@ -70,14 +65,14 @@ export async function register(req, res) {
 
     if (error) throw error;
 
-    // Création du wallet pour l'utilisateur
+    // Création du wallet pour l'utilisateur (peut être externalisé en RPC pour l'atomicité)
     await supabase.from("wallets").insert([{ user_id: inserted.id, balance: 0 }]);
 
-    const token = jwt.sign({ sub: inserted.id, role_id: roleId }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    const token = jwt.sign({ sub: inserted.id, role_id: roleId, role: "ACHETEUR" }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 
     return res.status(201).json({
       message: "User registered ✅",
-      user: { id: inserted.id, username: inserted.username, phone: inserted.phone, email: inserted.email },
+      user: { id: inserted.id, username: inserted.username, phone: inserted.phone, email: inserted.email, role: "ACHETEUR" },
       token
     });
   } catch (err) {
@@ -94,11 +89,10 @@ export async function login(req, res) {
     const { identifier, password } = req.body;
     if (!identifier || !password) return res.status(400).json({ error: "identifier and password required" });
 
-    // try to find user by email or phone or username
+    // Recherche de l'utilisateur par email, phone ou username
     const { data: users, error } = await supabase
       .from("users")
       .select("*, roles(name)")
-      // ⬅️ Correction de la syntaxe Supabase OR
       .or(`email.eq.${identifier},phone.eq.${identifier},username.eq.${identifier}`)
       .limit(1);
 
@@ -106,7 +100,8 @@ export async function login(req, res) {
     if (!users || users.length === 0) return res.status(401).json({ error: "Invalid credentials" });
 
     const user = users[0];
-
+    const roleName = user.roles ? user.roles.name : 'UNKNOWN';
+    
     // Vérification du statut actif
     if (!user.is_active) {
         return res.status(403).json({ error: "Your account is inactive. Please contact support." });
@@ -115,14 +110,11 @@ export async function login(req, res) {
     const match = await bcrypt.compare(password, user.password_hash);
     if (!match) return res.status(401).json({ error: "Invalid credentials" });
     
-    // Le nom du rôle est récupéré via la jointure 'roles'
-    const roleName = user.roles ? user.roles.name : 'UNKNOWN';
-
     const token = jwt.sign(
         { 
             sub: user.id, 
             role_id: user.role_id, 
-            role: roleName, // ⬅️ Ajout du nom du rôle pour le middleware
+            role: roleName, 
             is_super_admin: user.is_super_admin 
         }, 
         JWT_SECRET, 
@@ -145,25 +137,28 @@ export async function login(req, res) {
 // ========================
 export async function adminLogin(req, res) {
   try {
-    // Identifier l'admin par son username (qui fait office d'admin_username) et son téléphone
-    const { admin_username, phone, password } = req.body; 
-    if (!admin_username || !phone || !password) return res.status(400).json({ error: "admin_username, phone and password required" });
+    const { admin_username, password } = req.body; // Retrait du phone, le username et le password devraient suffire
+    if (!admin_username || !password) return res.status(400).json({ error: "admin_username and password required" });
 
-    // Recherche de l'utilisateur par username et téléphone, en vérifiant qu'il est bien un ADMIN ou SUPER_ADMIN
+    // Recherche de l'utilisateur par username, en vérifiant qu'il est bien ADMIN ou SUPER_ADMIN
     const { data: admins, error } = await supabase
       .from("users")
       .select("*, roles(name)")
-      // ⬅️ Correction: Utiliser 'username' et vérifier que le rôle est 'ADMIN' ou 'SUPER_ADMIN' (plus sûr que is_super_admin=true seul)
       .eq("username", admin_username)
-      .eq("phone", phone)
-      .or(`roles.name.eq.ADMIN,roles.name.eq.SUPER_ADMIN`)
-      .limit(1);
+      // ⬅️ Filtre direct sur le rôle dans la base (si le RLS le permet)
+      // Sinon, on fait confiance au résultat et on filtre après si nécessaire
+      .limit(1); 
 
     if (error) throw error;
     if (!admins || admins.length === 0) return res.status(401).json({ error: "Invalid admin credentials" });
 
     const admin = admins[0];
     const roleName = admin.roles ? admin.roles.name : 'UNKNOWN';
+
+    // Sécurité: Vérification que le rôle est bien un rôle d'administration
+    if (roleName !== 'ADMIN' && roleName !== 'SUPER_ADMIN') {
+         return res.status(401).json({ error: "Invalid admin credentials (Role access denied)" });
+    }
 
     // Vérification du statut actif
     if (!admin.is_active) {
@@ -193,4 +188,5 @@ export async function adminLogin(req, res) {
     console.error("Admin login error:", err);
     return res.status(500).json({ error: "Internal server error", details: err.message || err });
   }
-}
+           }
+      

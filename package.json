@@ -15,7 +15,11 @@
     "@supabase/supabase-js": "^2.39.5",
     "bcryptjs": "^2.4.3",
     "express-rate-limit": "^6.7.0",
-    "node-cron": "^3.0.3"
+    "cron": "^2.4.4",          // ⬅️ CRUCIAL : Bibliothèque 'cron' pour les CronJob précis
+    "multer": "^1.4.5-lts.1",    // ⬅️ CRUCIAL : Gestion des fichiers (Middleware dans server.js)
+    "node-fetch": "^3.3.2",      // ⬅️ CRITIQUE : Pour les appels API externes (Fedapay, si vous n'utilisez pas un runtime moderne)
+    "exceljs": "^4.4.0",         // ⬅️ EXPORTS : Pour générer des fichiers Excel (dans statsController)
+    "pdfkit": "^0.14.0"          // ⬅️ EXPORTS : Pour générer des fichiers PDF (dans statsController)
   },
   "devDependencies": {
     "nodemon": "^3.1.0"

@@ -64,7 +64,7 @@ app.use(express.urlencoded({ extended: true }));
 // 3. Importation des Routeurs
 // -----------------------------------------------------
 
-import authRouter from "./routes/authRoutes.js"; // ⬅️ Correction du nommage
+import authRouter from "./routes/authRoutes.js"; // Chemin OK : ./routes/ est dans src/
 import productRouter from "./routes/productRoutes.js";
 import orderRouter from "./routes/orderRoutes.js";
 import walletRouter from "./routes/walletRoutes.js";
@@ -106,10 +106,12 @@ app.use("/api/admin", adminRouter);
 // 5. Tâches de Fond (Cron Jobs)
 // -----------------------------------------------------
 
-import { startOrderCron } from "./cron/orderCron.js"; 
-import { startPaymentCron } from "./cron/paymentCron.js";
-import { startCleanupFilesCron } from "./cron/cleanupFilesCron.js"; 
-import { startWithdrawalCron } from "./cron/withdrawalCron.js"; // ⬅️ Tâche Finale
+// ⚡ CORRECTION CRITIQUE DES CHEMINS 
+// Le dossier 'cron' est à la racine, donc on doit remonter d'un niveau (../)
+import { startOrderCron } from "../cron/orderCron.js"; 
+import { startPaymentCron } from "../cron/paymentCron.js";
+import { startCleanupFilesCron } from "../cron/cleanupFilesCron.js"; 
+import { startWithdrawalCron } from "../cron/withdrawalCron.js"; // ⬅️ Tâche Finale
 
 // Tâche CRON 1 : Vérification et auto-validation horaire des commandes
 startOrderCron(); 
@@ -172,3 +174,4 @@ async function startServer() {
 }
 
 startServer();
+          

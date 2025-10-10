@@ -1,9 +1,9 @@
-// controllers/paymentProviderController.js
+// src/controllers/paymentProviderController.js (FINALISÉ)
 
 import { supabase } from "../server.js";
+import { addLog } from "./logController.js"; 
 
 // Utility function to check if the user is authorized (Super Admin check)
-// This is redundant if 'requireSuperAdmin' is in the router, but serves as a fail-safe.
 const isAuthorized = (user) => user && user.db.is_super_admin;
 
 
@@ -12,7 +12,6 @@ const isAuthorized = (user) => user && user.db.is_super_admin;
 // ========================
 export async function createProvider(req, res) {
   try {
-    // Utilisation de la vérification basée sur le modèle de données de req.user
     if (!isAuthorized(req.user)) { 
       return res.status(403).json({ error: "Accès refusé. Rôle Super Admin requis." });
     }
@@ -22,21 +21,25 @@ export async function createProvider(req, res) {
       return res.status(400).json({ error: "Champs obligatoires manquants" });
     }
 
-    // Si is_active = true, désactiver les autres providers actifs
+    // ⚠️ CRITIQUE : Si on active ce provider, désactiver TOUS les autres actifs
     if (is_active === true) {
-      // NOTE: Le `neq("name", name)` est critique pour éviter de désactiver la ligne qu'on est en train d'insérer,
-      // MAIS un simple update({is_active: false}) global est plus sûr si le nom n'existe pas encore.
-      await supabase.from("payment_providers").update({ is_active: false }).eq("is_active", true);
+      const { error: deactivateError } = await supabase
+        .from("payment_providers")
+        .update({ is_active: false })
+        .eq("is_active", true); // Désactive tous les providers actuellement actifs
+        
+      if (deactivateError) throw deactivateError;
     }
 
     const { data: provider, error } = await supabase
       .from("payment_providers")
-      // Assurez-vous que les colonnes 'name', 'public_key', 'secret_key' existent
       .insert([{ name, public_key, secret_key, is_active: is_active || false }])
       .select()
       .single();
 
     if (error) throw error;
+    
+    await addLog(req.user.db.id, 'PAYMENT_PROVIDER_CREATED', { name: provider.name, id: provider.id, is_active: provider.is_active });
 
     return res.status(201).json({ message: "Provider ajouté ✅", provider });
   } catch (err) {
@@ -72,9 +75,10 @@ export async function getActiveProvider(req, res) {
   try {
     const { data: provider, error } = await supabase
       .from("payment_providers")
-      // Ne retourner que les clés publiques pour la sécurité
+      // Ne retourner que les clés publiques et le nom pour la sécurité
       .select("id, name, public_key")
       .eq("is_active", true)
+      .limit(1) // ⬅️ S'assurer qu'un seul est retourné
       .single();
 
     if (error || !provider) {
@@ -100,9 +104,14 @@ export async function updateProvider(req, res) {
     const { id } = req.params;
     const updatePayload = req.body;
 
-    // Si on active ce provider, on désactive les autres
+    // ⚠️ CRITIQUE : Si on active ce provider, désactiver les autres
     if (updatePayload.is_active === true) {
-      await supabase.from("payment_providers").update({ is_active: false }).neq("id", id);
+      const { error: deactivateError } = await supabase
+        .from("payment_providers")
+        .update({ is_active: false })
+        .neq("id", id); // Désactive tous les autres (sauf celui-ci)
+        
+      if (deactivateError) throw deactivateError;
     }
 
     const { data: updated, error } = await supabase
@@ -113,6 +122,8 @@ export async function updateProvider(req, res) {
       .single();
 
     if (error) throw error;
+    
+    await addLog(req.user.db.id, 'PAYMENT_PROVIDER_UPDATED', { id: updated.id, name: updated.name, is_active: updated.is_active });
 
     return res.json({ message: "Provider mis à jour ✅", provider: updated });
   } catch (err) {
@@ -131,9 +142,16 @@ export async function deleteProvider(req, res) {
     }
 
     const { id } = req.params;
+    
+    // Récupérer le nom pour le log
+    const { data: deletedProvider } = await supabase.from("payment_providers").select("name").eq("id", id).single();
+    
     const { error } = await supabase.from("payment_providers").delete().eq("id", id);
 
     if (error) throw error;
+    
+    await addLog(req.user.db.id, 'PAYMENT_PROVIDER_DELETED', { id, name: deletedProvider?.name });
+    
     return res.json({ message: "Provider supprimé ✅" });
   } catch (err) {
     console.error("Delete provider error:", err);

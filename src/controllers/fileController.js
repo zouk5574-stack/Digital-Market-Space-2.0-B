@@ -1,4 +1,4 @@
-// controllers/fileController.js (MISE À JOUR)
+// src/controllers/fileController.js (FINALISÉ)
 
 import { supabase } from "../server.js";
 import { v4 as uuidv4 } from "uuid";
@@ -8,10 +8,10 @@ import mime from "mime-types";
 const BUCKET = process.env.SUPABASE_FILES_BUCKET || "product-files";
 const MAX_FILE_BYTES = Number(process.env.MAX_FILE_BYTES || 50 * 1024 * 1024); // 50 MB
 const ALLOWED_MIMES = (process.env.ALLOWED_MIMES || "image/jpeg,image/png,image/webp,video/mp4,application/pdf,application/zip").split(",");
+const ONE_HOUR_THIRTY_MINUTES_IN_SECONDS = 5400; // 1h30
 
 // -----------------------------
 // 1. Upload file (seller or admin)
-// (Pas de changement)
 // -----------------------------
 export async function uploadFile(req, res) {
   try {
@@ -28,7 +28,7 @@ export async function uploadFile(req, res) {
       return res.status(400).json({ error: "Type de fichier non autorisé" });
     }
     if (size > MAX_FILE_BYTES) {
-      return res.status(400).json({ error: `Fichier trop volumineux (max ${MAX_FILE_BYTES} bytes)` });
+      return res.status(400).json({ error: `Fichier trop volumineux (max ${MAX_FILE_BYTES / (1024 * 1024)} MB)` });
     }
 
     // Verify product exists and ownership
@@ -125,12 +125,14 @@ export async function getFileDownloadUrl(req, res) {
       // Check orders: buyer purchased this product and status allows download
       const { data: orders, error: ordersErr } = await supabase
         .from("orders")
-        .select("id,status,buyer_id,product_id")
+        .select("id,status,buyer_id")
         .eq("product_id", file.product_id)
-        .eq("buyer_id", requesterId);
+        .eq("buyer_id", requesterId)
+        .limit(1); // ⬅️ On n'a besoin que d'une seule commande réussie
 
       if (!ordersErr && orders && orders.length > 0) {
-        const allowedStatuses = ["completed", "delivered"]; 
+        // ➡️ AMÉLIORATION : Seul le statut 'completed' est nécessaire pour les produits numériques
+        const allowedStatuses = ["completed"]; 
         buyerHasAccess = orders.some(o => allowedStatuses.includes(o.status));
       }
     }
@@ -139,8 +141,7 @@ export async function getFileDownloadUrl(req, res) {
       return res.status(403).json({ error: "Accès refusé au téléchargement (Achat non confirmé)." });
     }
 
-    // ⭐ CRITIQUE : Création de l'URL signée (TTL 1h30min par défaut)
-    const ONE_HOUR_THIRTY_MINUTES_IN_SECONDS = 5400; // 3600 + 1800
+    // ⭐ CRITIQUE : Création de l'URL signée
     const ttlSeconds = Number(process.env.DOWNLOAD_URL_TTL_SEC || ONE_HOUR_THIRTY_MINUTES_IN_SECONDS); 
     const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(file.storage_path, ttlSeconds);
 
@@ -158,7 +159,6 @@ export async function getFileDownloadUrl(req, res) {
 
 // ---------------------------
 // 3. Delete file (owner or admin)
-// (Pas de changement)
 // ---------------------------
 export async function deleteFile(req, res) {
   try {
@@ -201,7 +201,6 @@ export async function deleteFile(req, res) {
 
 // ---------------------------------
 // 4. List files for a product (owner)
-// (Pas de changement)
 // ---------------------------------
 export async function listFilesForProduct(req, res) {
   try {
@@ -234,4 +233,5 @@ export async function listFilesForProduct(req, res) {
     console.error("listFilesForProduct error:", err);
     return res.status(500).json({ error: "Erreur serveur", details: err.message || err });
   }
-}
+  }
+                                  

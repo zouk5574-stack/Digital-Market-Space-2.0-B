@@ -2,10 +2,10 @@
   "name": "digital-market-space-2.0",
   "version": "1.0.0",
   "type": "module",
-  "main": "src/server.js",
+  "main": "server.js",
   "scripts": {
-    "dev": "nodemon src/server.js",
-    "start": "node src/server.js"
+    "dev": "server.js",
+    "start": "server.js"
   },
   "dependencies": {
     "express": "^4.18.2",

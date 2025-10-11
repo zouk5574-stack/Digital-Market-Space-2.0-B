@@ -1,15 +1,17 @@
 // =========================================================
-// controllers/authController.js (MISE À JOUR & OPTIMISATION)
+// controllers/authController.js (MISE À JOUR : Choix du Rôle à l'Inscription)
 // =========================================================
 
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { supabase } from "../server.js";
-import { addLog } from "./logController.js"; // 🚨 NOUVEL IMPORT CRITIQUE
+import { addLog } from "./logController.js"; 
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES_IN = "30d";
-const INVALID_CREDENTIALS_MSG = "Identifiants invalides."; // Message générique pour la sécurité
+const INVALID_CREDENTIALS_MSG = "Identifiants invalides."; 
+// 🚨 NOUVEAU : Rôles autorisés pour l'inscription publique
+const AUTHORIZED_REGISTRATION_ROLES = ['ACHETEUR', 'VENDEUR']; 
 
 // Fonction d'aide pour récupérer l'ID du rôle par son nom
 async function getRoleIdByName(name) {
@@ -19,7 +21,6 @@ async function getRoleIdByName(name) {
     .eq("name", name)
     .limit(1)
     .single();
-  // 🚨 Ajout de la vérification : si le rôle n'existe pas, cela doit échouer.
   if (error || !data) throw new Error(`Role ID for '${name}' not found.`); 
   return data.id;
 }
@@ -29,19 +30,24 @@ async function getRoleIdByName(name) {
 // ========================
 export async function register(req, res) {
   try {
-    const { username, firstname, lastname, phone, email, password } = req.body;
-    if (!username || !phone || !password) {
-      return res.status(400).json({ error: "Le nom d'utilisateur, le téléphone et le mot de passe sont requis" });
+    // 🚨 MODIFICATION : Ajout de 'role' dans le destructuring de req.body
+    const { username, firstname, lastname, phone, email, password, role } = req.body;
+    
+    if (!username || !phone || !password || !role) {
+      return res.status(400).json({ error: "Le nom d'utilisateur, le téléphone, le mot de passe et le rôle sont requis" });
     }
 
-    // 🚨 SÉCURITÉ : La seule façon de s'inscrire est en tant qu'ACHETEUR ou VENDEUR, jamais ADMIN.
-    const roleToAssign = 'ACHETEUR'; 
+    // 🚨 SÉCURITÉ CRITIQUE : Vérification que le rôle est autorisé
+    const roleToAssign = role.toUpperCase();
+    if (!AUTHORIZED_REGISTRATION_ROLES.includes(roleToAssign)) {
+      // Interdiction stricte de s'inscrire en tant qu'Admin
+      return res.status(403).json({ error: `Rôle invalide ou non autorisé. Seuls les rôles ${AUTHORIZED_REGISTRATION_ROLES.join(' ou ')} sont permis à l'inscription.` });
+    }
 
     // CRITIQUE: Vérification d'utilisateur existant par phone, username ou email
     const { data: existingUsers, error: checkError } = await supabase
       .from("users")
       .select("id")
-      // Le filtre or doit être construit correctement pour PostgREST/Supabase
       .or(`phone.eq.${phone},username.eq.${username},email.eq.${email}`); 
 
     if (checkError) throw checkError;
@@ -56,12 +62,12 @@ export async function register(req, res) {
       .from("users")
       .insert([{
         role_id: roleId,
-        role: roleToAssign, // 🚨 Ajout du champ 'role' pour le middleware (si vous utilisez le nom du rôle)
+        role: roleToAssign, 
         username,
         firstname,
         lastname,
         phone,
-        email: email ? email.toLowerCase() : null, // Mettre l'email en minuscules
+        email: email ? email.toLowerCase() : null, 
         password_hash,
         is_super_admin: false, // 🚨 CRITIQUE : Toujours false pour les inscriptions
         is_active: true, 
@@ -87,12 +93,19 @@ export async function register(req, res) {
     });
   } catch (err) {
     console.error("Register error:", err);
-    return res.status(500).json({ error: "Erreur serveur interne", details: err.message || err });
+    // Vérification si l'erreur vient d'un rôle introuvable dans la DB
+    const detail = err.message || err;
+    if (detail.includes("Role ID for")) {
+        return res.status(500).json({ error: "Erreur de configuration du rôle. Le rôle sélectionné n'existe pas dans la base de données.", details: detail });
+    }
+    return res.status(500).json({ error: "Erreur serveur interne", details: detail });
   }
 }
 
+// --------------------------------------------------------------------------------------------------
+
 // ========================
-// 🔑 2. Login (Connexion générique)
+// 🔑 2. Login (Connexion générique) - AUCUNE MODIFICATION NÉCESSAIRE
 // ========================
 export async function login(req, res) {
   try {
@@ -116,9 +129,8 @@ export async function login(req, res) {
     const match = await bcrypt.compare(password, user.password_hash);
     if (!match) return res.status(401).json({ error: INVALID_CREDENTIALS_MSG });
 
-    // 🚨 Sécurité : Vérification du statut après la vérification du mot de passe (pour éviter d'informer l'attaquant)
+    // 🚨 Sécurité : Vérification du statut après la vérification du mot de passe
     if (!user.is_active) {
-        // Loguer la tentative de connexion échouée d'un compte inactif
         addLog(user.id, 'LOGIN_FAILED_INACTIVE', { identifier, ip: req.ip });
         return res.status(403).json({ error: "Votre compte est inactif. Veuillez contacter le support." }); 
     }
@@ -148,38 +160,37 @@ export async function login(req, res) {
   }
 }
 
+// --------------------------------------------------------------------------------------------------
+
 // ========================
-// 👑 3. Admin login endpoint (Dédié et Strict)
+// 👑 3. Admin login endpoint (Dédié et Strict) - AUCUNE MODIFICATION NÉCESSAIRE
 // ========================
+// Respecte l'exigence : "L'administrateur pourra accéder à son espace administrateur si et seulement si les informations que je t'ai fourni ci-haut son réunis"
 export async function adminLogin(req, res) {
   try {
-    const { username, password } = req.body; // Utilisation de 'username' pour la cohérence
+    const { username, password } = req.body; 
     if (!username || !password) return res.status(400).json({ error: "Nom d'utilisateur administrateur et mot de passe requis" });
 
-    // Recherche de l'utilisateur par username, TRES STRICTE: doit être SUPER ADMIN
+    // Recherche stricte : l'utilisateur DOIT correspondre au username ET être un is_super_admin
     const { data: admins, error } = await supabase
       .from("users")
       .select("*, roles(name)")
       .eq("username", username)
-      .eq("is_super_admin", true) // 🚨 CRITIQUE : S'assurer qu'il est le seul Super Admin
+      .eq("is_super_admin", true) // 🚨 CRITIQUE : Condition absolue pour l'accès admin
       .limit(1); 
 
     if (error) throw error;
 
     const admin = admins?.[0];
+    // Échec si l'utilisateur n'existe pas ou n'est pas un Super Admin
     if (!admin) return res.status(401).json({ error: INVALID_CREDENTIALS_MSG });
 
     const roleName = admin.roles?.name || admin.role || 'UNKNOWN';
 
-    // Sécurité: Redondance, mais bonne pratique. Si is_super_admin est true, le rôle devrait être ADMIN/SUPER_ADMIN.
-    if (!admin.is_super_admin) {
-         return res.status(401).json({ error: INVALID_CREDENTIALS_MSG });
-    }
-
     const match = await bcrypt.compare(password, admin.password_hash);
     if (!match) return res.status(401).json({ error: INVALID_CREDENTIALS_MSG });
 
-    // 🚨 Sécurité : Vérification du statut après la vérification du mot de passe
+    // 🚨 Sécurité : Vérification du statut (actif)
     if (!admin.is_active) {
         addLog(admin.id, 'ADMIN_LOGIN_FAILED_INACTIVE', { username, ip: req.ip });
         return res.status(403).json({ error: "Le compte administrateur est inactif." });

@@ -1,5 +1,5 @@
 // =========================================================
-// server.js (VERSION FINALE BACKEND - Chemin Cron Corrigé)
+// server.js (VERSION FINALE BACKEND - CHEMIN CORRIGÉ)
 // =========================================================
 import 'dotenv/config'; 
 import express from 'express';
@@ -8,9 +8,10 @@ import { createClient } from '@supabase/supabase-js';
 import multer from 'multer';
 
 // ------------------------------------
-// 1. IMPORT DES MODULES CRITIQUES (Chemin corrigé pour le Cron)
+// 1. IMPORT DES MODULES CRITIQUES (Sécurité & Performance)
 // ------------------------------------
-import { startCleanupFilesCron } from './src/cron/cleanupFilesCron.js'; // 🚨 CHEMIN CORRIGÉ
+// 🚨 CORRECTION DU CHEMIN : S'assurer que le cron est bien dans src/cron
+import { startCleanupFilesCron } from './src/cron/cleanupFilesCron.js'; 
 import authRoutes from './src/routes/authRoutes.js';
 import fileRoutes from './src/routes/fileRoutes.js';
 import productRoutes from './src/routes/productRoutes.js';
@@ -22,15 +23,16 @@ import orderRoutes from './src/routes/orderRoutes.js';
 // 2. INITIALISATION DE SUPABASE (Client partagé)
 // ------------------------------------
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+const supabaseKey = process.env.SUPABASE_SERVICE_KEY; 
 
 if (!supabaseUrl || !supabaseKey) {
     console.error("CRITICAL ERROR: SUPABASE_URL or SUPABASE_SERVICE_KEY not set in .env");
     process.exit(1);
 }
 
+// 🚨 Exportez le client Supabase pour qu'il soit utilisé par tous les contrôleurs
 export const supabase = createClient(supabaseUrl, supabaseKey, {
-    auth: { persistSession: false },
+    auth: { persistSession: false }, 
 });
 
 // ------------------------------------
@@ -45,12 +47,12 @@ app.use(cors({
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
 }));
 app.use(express.json()); 
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: true })); 
 
 // Configuration Multer pour les uploads de fichiers
 export const upload = multer({ 
     storage: multer.memoryStorage(),
-    limits: { fileSize: 10 * 1024 * 1024 } // Limite à 10 MB pour la survie du plan gratuit
+    limits: { fileSize: 10 * 1024 * 1024 } // 🚨 Limite stricte de 10 MB
 });
 
 // ------------------------------------
@@ -60,9 +62,9 @@ app.get('/', (req, res) => {
     res.send(`Marketplace API is running on port ${port}`);
 });
 
-// Montage des routes (Les imports de routes sont supposés être dans src/routes)
 app.use('/api/auth', authRoutes);
-app.use('/api/files', upload.single('file'), fileRoutes);
+// Multer est intégré sur la route /files pour le traitement du fichier
+app.use('/api/files', upload.single('file'), fileRoutes); 
 app.use('/api/products', productRoutes);
 app.use('/api/freelance', freelanceRoutes);
 app.use('/api/orders', orderRoutes);
@@ -74,8 +76,8 @@ app.use('/api/logs', logRoutes);
 app.listen(port, () => {
     console.log(`\n==============================================`);
     console.log(`🚀 Server listening at http://localhost:${port}`);
-    
-    // Démarrage du Cron
+
+    // Démarrage du Cron de Nettoyage
     startCleanupFilesCron(); 
     
     console.log(`==============================================\n`);

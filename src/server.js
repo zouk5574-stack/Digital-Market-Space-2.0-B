@@ -1,138 +1,89 @@
 // =========================================================
-// src/controllers/fileController.js (OPTIMISATION AGRESSIVE POUR PLAN GRATUIT)
+// server.js (VERSION FINALE BACKEND)
 // =========================================================
+import 'dotenv/config'; // 🚨 IMPORTANT : Charger les variables d'environnement au démarrage
+import express from 'express';
+import cors from 'cors';
+import { createClient } from '@supabase/supabase-js';
+import multer from 'multer'; // Pour la gestion des fichiers dans fileController.js
 
-import { supabase } from "../server.js";
-import { v4 as uuidv4 } from "uuid";
-import mime from "mime-types";
-import sharp from 'sharp'; 
+// ------------------------------------
+// 1. IMPORT DES MODULES CRITIQUES (Sécurité & Performance)
+// ------------------------------------
+import { startCleanupFilesCron } from './cron/cleanupFilesCron.js'; // 🚨 Cron de Nettoyage (Survie Plan Gratuit)
+import authRoutes from './src/routes/authRoutes.js';        // Routes d'Inscription/Connexion
+import fileRoutes from './src/routes/fileRoutes.js';        // Routes de gestion de fichiers (Upload/Téléchargement)
+import productRoutes from './src/routes/productRoutes.js';    // Routes des produits digitaux
+import freelanceRoutes from './src/routes/freelanceRoutes.js'; // Routes des missions freelance
+import logRoutes from './src/routes/logRoutes.js';          // Routes d'audit des logs (Admin)
+import orderRoutes from './src/routes/orderRoutes.js';        // Routes des commandes
 
-// Récupération de l'URL de base pour les URLs publiques
-const supabaseUrl = process.env.SUPABASE_URL; 
+// ------------------------------------
+// 2. INITIALISATION DE SUPABASE (Client partagé)
+// ------------------------------------
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_KEY; // Utiliser la clé Service Role pour le backend (meilleure sécurité et moins de RLS)
 
-// Configs (via env)
-const BUCKET = process.env.SUPABASE_FILES_BUCKET || "product-files";
-// 🚨 NOUVELLE LIMITE : 10 MB par défaut pour la survie (vous pouvez la régler dans .env)
-const MAX_FILE_BYTES = Number(process.env.MAX_FILE_BYTES || 10 * 1024 * 1024); 
-const ALLOWED_MIMES = (process.env.ALLOWED_MIMES || "image/jpeg,image/png,image/webp,application/pdf,application/zip").split(",");
-const ONE_HOUR_THIRTY_MINUTES_IN_SECONDS = 5400; // 1h30
-
-
-// ---------------------------------------------------------
-// 🚨 LOGIQUE D'OPTIMISATION À 98% ET 1280px MAX 
-// ---------------------------------------------------------
-async function optimizeImage(buffer, mimetype) {
-    if (mimetype.startsWith('image/jpeg') || mimetype.startsWith('image/jpg')) {
-        console.log(`-> Optimisation JPEG (Qualité 98%, Max 1280px) : ${buffer.length} octets...`);
-        try {
-            const optimizedBuffer = await sharp(buffer)
-                // 🚨 Réduction à 1280px MAX pour économie d'espace
-                .resize(1280, 1280, { fit: 'inside', withoutEnlargement: true }) 
-                .jpeg({ quality: 98 }) // Qualité 98%
-                .toBuffer();
-            
-            console.log(`-> Optimisation terminée (Taille finale: ${optimizedBuffer.length} octets).`);
-            return { buffer: optimizedBuffer, size: optimizedBuffer.length };
-
-        } catch (err) {
-            console.error("Erreur sharp, utilisation du buffer original.", err);
-            return { buffer: buffer, size: buffer.length }; 
-        }
-    }
-    // Pour les autres types (PNG/PDF/ZIP), pas d'optimisation
-    return { buffer: buffer, size: buffer.length };
+if (!supabaseUrl || !supabaseKey) {
+    console.error("CRITICAL ERROR: SUPABASE_URL or SUPABASE_SERVICE_KEY not set in .env");
+    process.exit(1);
 }
 
+// 🚨 Exportez le client Supabase pour qu'il soit utilisé par tous les contrôleurs
+export const supabase = createClient(supabaseUrl, supabaseKey, {
+    auth: { persistSession: false }, // Les sessions Supabase Auth sont gérées par notre propre JWT
+});
 
-// -----------------------------
-// 1. Upload file (seller or admin)
-// -----------------------------
-export async function uploadFile(req, res) {
-  try {
-    const userId = req.user.db.id; 
-    const { product_id } = req.body;
+// ------------------------------------
+// 3. CONFIGURATION GÉNÉRALE DU SERVEUR
+// ------------------------------------
+const app = express();
+const port = process.env.PORT || 3001;
 
-    if (!product_id) return res.status(400).json({ error: "product_id requis" });
-    if (!req.file) return res.status(400).json({ error: "Fichier requis (multipart/form-data, champ 'file')" });
+// Middlewares globaux
+app.use(cors({ 
+    origin: process.env.CORS_ORIGIN || '*', // Réglez ceci sur votre domaine Next.js en production
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+}));
+app.use(express.json()); // Pour gérer le corps des requêtes JSON
+app.use(express.urlencoded({ extended: true })); // Pour gérer le corps des requêtes url-encoded
 
-    let { originalname, mimetype, size, buffer } = req.file;
+// Configuration Multer pour les uploads de fichiers
+// Nous utilisons `memoryStorage` car nous traitons/optimisons le fichier dans le contrôleur (sharp)
+export const upload = multer({ 
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024 } // 🚨 Limite du fichier définie à 10 MB ici aussi (pour le multipart)
+});
 
-    // Validation MIME & Size (basée sur le fichier original)
-    if (!ALLOWED_MIMES.includes(mimetype)) {
-      return res.status(400).json({ error: "Type de fichier non autorisé" });
-    }
-    if (size > MAX_FILE_BYTES) {
-      return res.status(400).json({ error: `Fichier trop volumineux (max ${MAX_FILE_BYTES / (1024 * 1024)} MB)` });
-    }
+// ------------------------------------
+// 4. MONTAGE DES ROUTES API
+// ------------------------------------
+app.get('/', (req, res) => {
+    res.send(`Marketplace API is running on port ${port}`);
+});
 
-    // 🚨 Étape d'Optimisation : Remplace le buffer et la taille si c'est une image
-    const optimized = await optimizeImage(buffer, mimetype);
-    buffer = optimized.buffer;
-    size = optimized.size; 
+// Routes principales
+app.use('/api/auth', authRoutes);
+app.use('/api/files', upload.single('file'), fileRoutes); // Utilise Multer comme middleware sur la route /files
+app.use('/api/products', productRoutes);
+app.use('/api/freelance', freelanceRoutes);
+app.use('/api/orders', orderRoutes);
 
-    // Vérification de l'existence du produit (owner_id)
-    const { data: product, error: productError } = await supabase
-      .from("products")
-      .select("id, owner_id") 
-      .eq("id", product_id)
-      .limit(1)
-      .single();
+// Route Admin (Audit/Surveillance)
+app.use('/api/logs', logRoutes); 
 
-    if (productError || !product) return res.status(404).json({ error: "Produit introuvable" });
-    if (product.owner_id !== userId && !req.user.db.is_super_admin) { 
-      return res.status(403).json({ error: "Accès refusé : vous n'êtes pas le propriétaire du produit" });
-    }
+// ------------------------------------
+// 5. DÉMARRAGE DU SERVEUR ET DU CRON
+// ------------------------------------
+app.listen(port, () => {
+    console.log(`\n==============================================`);
+    console.log(`🚀 Server listening at http://localhost:${port}`);
+    
+    // 🚨 Démarrage du Cron de Nettoyage (essentiel pour la survie du plan gratuit)
+    startCleanupFilesCron(); 
+    
+    console.log(`==============================================\n`);
+});
 
-    // Build storage path
-    const ext = mime.extension(mimetype) || originalname.split(".").pop();
-    const generatedName = `${uuidv4()}.${ext}`;
-    const storagePath = `${userId}/${product_id}/${generatedName}`;
-
-    // Upload vers Supabase Storage
-    const { error: uploadError } = await supabase.storage
-      .from(BUCKET)
-      .upload(storagePath, buffer, {
-        contentType: mimetype,
-        upsert: false
-      });
-
-    if (uploadError) {
-      console.error("Supabase storage upload error:", uploadError);
-      return res.status(500).json({ error: "Erreur stockage fichier", details: uploadError.message || uploadError });
-    }
-
-    // Insert metadata (utilise la nouvelle taille optimisée)
-    const { data: meta, error: metaErr } = await supabase
-      .from("product_files")
-      .insert([{
-        product_id,
-        owner_id: userId, 
-        storage_path: storagePath,
-        filename: originalname,
-        content_type: mimetype,
-        size_bytes: size, 
-        is_public: false
-      }])
-      .select()
-      .single();
-
-    if (metaErr) {
-      // rollback storage (best effort)
-      await supabase.storage.from(BUCKET).remove([storagePath]).catch(() => {});
-      console.error("Error inserting file metadata:", metaErr);
-      return res.status(500).json({ error: "Erreur enregistrement metadata", details: metaErr.message || metaErr });
-    }
-
-    const publicURL = `${supabaseUrl}/storage/v1/object/public/${BUCKET}/${storagePath}`;
-
-    return res.status(201).json({ 
-        message: "Fichier uploadé et optimisé ✅", 
-        file: { ...meta, url: publicURL }
-    });
-  } catch (err) {
-    console.error("uploadFile error:", err);
-    return res.status(500).json({ error: "Erreur serveur", details: err.message || err });
-  }
-}
-
-// ... Les autres fonctions (getFileDownloadUrl, deleteFile, listFilesForProduct) restent inchangées.
+// Exportation pour les tests unitaires (optionnel)
+export default app;

@@ -1,162 +1,138 @@
 // =========================================================
-// src/server.js (VERSION FINALE ET CORRIGÉE POUR LE LANCEMENT)
+// src/controllers/fileController.js (OPTIMISATION AGRESSIVE POUR PLAN GRATUIT)
 // =========================================================
-import express from "express";
-import cors from "cors";
-import dotenv from "dotenv";
-import rateLimit from "express-rate-limit";
-import { createClient } from "@supabase/supabase-js";
-// import { CronJob } from "cron"; // Plus nécessaire ici si les Crons sont dans leurs propres fichiers
-// import multer from 'multer'; // ⚠️ NE PAS IMPORTER ICI. GÉRER DANS fileRoutes.js.
 
-// -----------------------------------------------------
-// 1. Initialisation de l'environnement et de Supabase
-// -----------------------------------------------------
+import { supabase } from "../server.js";
+import { v4 as uuidv4 } from "uuid";
+import mime from "mime-types";
+import sharp from 'sharp'; 
 
-dotenv.config();
+// Récupération de l'URL de base pour les URLs publiques
+const supabaseUrl = process.env.SUPABASE_URL; 
 
-const port = process.env.PORT || 5000;
-const BASE_URL = process.env.BASE_URL || `http://localhost:${port}`;
-
-// Initialisation de Supabase
-export const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
-
-const app = express();
-
-// -----------------------------------------------------
-// 2. Middlewares CRITIQUES & Sécurité
-// -----------------------------------------------------
-
-// ✅ Limiteur de requêtes (Sécurité)
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-app.use(limiter);
-
-// Middleware CRITIQUE pour les Webhooks Fedapay (lecture du corps BRUT)
-app.use((req, res, next) => {
-    if (req.originalUrl.includes('/api/fedapay/webhook')) {
-        express.raw({ type: 'application/json', limit: '5mb' })(req, res, next);
-    } else {
-        express.json({ limit: '5mb' })(req, res, next);
-    }
-});
-
-// ⚠️ Suppression de app.use(upload.single('file')) : Multer doit être utilisé sur la route spécifique /api/files/upload.
-
-// Autres middlewares standard
-app.use(cors());
-app.use(express.urlencoded({ extended: true }));
+// Configs (via env)
+const BUCKET = process.env.SUPABASE_FILES_BUCKET || "product-files";
+// 🚨 NOUVELLE LIMITE : 10 MB par défaut pour la survie (vous pouvez la régler dans .env)
+const MAX_FILE_BYTES = Number(process.env.MAX_FILE_BYTES || 10 * 1024 * 1024); 
+const ALLOWED_MIMES = (process.env.ALLOWED_MIMES || "image/jpeg,image/png,image/webp,application/pdf,application/zip").split(",");
+const ONE_HOUR_THIRTY_MINUTES_IN_SECONDS = 5400; // 1h30
 
 
-// -----------------------------------------------------
-// 3. Importation des Routeurs
-// -----------------------------------------------------
+// ---------------------------------------------------------
+// 🚨 LOGIQUE D'OPTIMISATION À 98% ET 1280px MAX 
+// ---------------------------------------------------------
+async function optimizeImage(buffer, mimetype) {
+    if (mimetype.startsWith('image/jpeg') || mimetype.startsWith('image/jpg')) {
+        console.log(`-> Optimisation JPEG (Qualité 98%, Max 1280px) : ${buffer.length} octets...`);
+        try {
+            const optimizedBuffer = await sharp(buffer)
+                // 🚨 Réduction à 1280px MAX pour économie d'espace
+                .resize(1280, 1280, { fit: 'inside', withoutEnlargement: true }) 
+                .jpeg({ quality: 98 }) // Qualité 98%
+                .toBuffer();
+            
+            console.log(`-> Optimisation terminée (Taille finale: ${optimizedBuffer.length} octets).`);
+            return { buffer: optimizedBuffer, size: optimizedBuffer.length };
 
-import authRouter from "./routes/authRoutes.js";
-import productRouter from "./routes/productRoutes.js";
-import orderRouter from "./routes/orderRoutes.js";
-import walletRouter from "./routes/walletRoutes.js";
-import freelanceRouter from "./routes/freelanceRoutes.js";
-import withdrawalRouter from "./routes/withdrawalRoutes.js";
-import fedapayRouter from "./routes/fedapayRoutes.js";
-import paymentProviderRouter from "./routes/paymentProviderRoutes.js";
-import notificationRouter from "./routes/notificationRoutes.js";
-import logRouter from "./routes/logRoutes.js";
-import fileRouter from "./routes/fileRoutes.js";
-import adminRouter from "./routes/adminRoutes.js"; 
-
-// -----------------------------------------------------
-// 4. Déclaration des Routes
-// -----------------------------------------------------
-
-app.get("/", (req, res) => {
-  res.send(`Marketplace API is running on port ${port} at ${new Date().toISOString()} 🚀`);
-});
-
-app.use("/api/auth", authRouter);
-app.use("/api/products", productRouter);
-app.use("/api/orders", orderRouter);
-app.use("/api/wallet", walletRouter);
-app.use("/api/freelance", freelanceRouter);
-app.use("/api/withdrawals", withdrawalRouter);
-app.use("/api/fedapay", fedapayRouter);
-app.use("/api/providers", paymentProviderRouter);
-app.use("/api/files", fileRouter);
-app.use("/api/logs", logRouter);
-app.use("/api/notifications", notificationRouter);
-app.use("/api/admin", adminRouter);
-
-
-// -----------------------------------------------------
-// 5. Tâches de Fond (Cron Jobs)
-// -----------------------------------------------------
-
-import { startOrderCron } from "../cron/orderCron.js"; 
-import { startPaymentCron } from "../cron/paymentCron.js";
-import { startCleanupFilesCron } from "../cron/cleanupFilesCron.js"; 
-import { startWithdrawalCron } from "../cron/withdrawalCron.js"; // ⬅️ CORRECTION : Chemin du contrôleur Cron
-
-const startCrons = () => {
-    startOrderCron(); 
-    console.log(`[CRON] Auto-validation des commandes planifiée : Every hour`);
-
-    startPaymentCron();
-    console.log(`[CRON] Gestion des paiements expirés planifiée : Every 5 minutes`);
-
-    startCleanupFilesCron(); 
-    console.log(`[CRON] Nettoyage des fichiers planifié : Daily 3:30am`);
-
-    startWithdrawalCron(); 
-    console.log(`[CRON] Auto-approbation des retraits planifiée : Every hour`);
-};
-
-
-// -----------------------------------------------------
-// 6. Démarrage du Serveur avec Vérification DB
-// -----------------------------------------------------
-
-async function checkDbConnection() {
-    try {
-        const { count, error } = await supabase.from('users').select('*', { count: 'exact', head: true });
-
-        if (error) {
-            console.error("❌ Échec de la connexion/vérification Supabase:", error);
-            throw new Error("Clé Service Role invalide ou base de données inaccessible.");
+        } catch (err) {
+            console.error("Erreur sharp, utilisation du buffer original.", err);
+            return { buffer: buffer, size: buffer.length }; 
         }
-
-        // Si la connexion réussit, on démarre les Crons
-        startCrons(); 
-        return true;
-    } catch (err) {
-        console.error(`\n-----------------------------------------`);
-        console.error(`🚨 ERREUR CRITIQUE DE DÉMARRAGE 🚨`);
-        console.error(err.message);
-        console.error(`-----------------------------------------\n`);
-        return false;
     }
+    // Pour les autres types (PNG/PDF/ZIP), pas d'optimisation
+    return { buffer: buffer, size: buffer.length };
 }
 
-async function startServer() {
-    const isConnected = await checkDbConnection();
 
-    if (isConnected) {
-        app.listen(port, () => {
-          console.log(`\n-----------------------------------------`);
-          console.log(`✅ API Marketplace Lancée avec succès !`);
-          console.log(`⚡ URL : ${BASE_URL}`);
-          console.log(`Port : ${port}`);
-          console.log(`-----------------------------------------`);
-        });
-    } else {
-        process.exit(1); 
+// -----------------------------
+// 1. Upload file (seller or admin)
+// -----------------------------
+export async function uploadFile(req, res) {
+  try {
+    const userId = req.user.db.id; 
+    const { product_id } = req.body;
+
+    if (!product_id) return res.status(400).json({ error: "product_id requis" });
+    if (!req.file) return res.status(400).json({ error: "Fichier requis (multipart/form-data, champ 'file')" });
+
+    let { originalname, mimetype, size, buffer } = req.file;
+
+    // Validation MIME & Size (basée sur le fichier original)
+    if (!ALLOWED_MIMES.includes(mimetype)) {
+      return res.status(400).json({ error: "Type de fichier non autorisé" });
     }
+    if (size > MAX_FILE_BYTES) {
+      return res.status(400).json({ error: `Fichier trop volumineux (max ${MAX_FILE_BYTES / (1024 * 1024)} MB)` });
+    }
+
+    // 🚨 Étape d'Optimisation : Remplace le buffer et la taille si c'est une image
+    const optimized = await optimizeImage(buffer, mimetype);
+    buffer = optimized.buffer;
+    size = optimized.size; 
+
+    // Vérification de l'existence du produit (owner_id)
+    const { data: product, error: productError } = await supabase
+      .from("products")
+      .select("id, owner_id") 
+      .eq("id", product_id)
+      .limit(1)
+      .single();
+
+    if (productError || !product) return res.status(404).json({ error: "Produit introuvable" });
+    if (product.owner_id !== userId && !req.user.db.is_super_admin) { 
+      return res.status(403).json({ error: "Accès refusé : vous n'êtes pas le propriétaire du produit" });
+    }
+
+    // Build storage path
+    const ext = mime.extension(mimetype) || originalname.split(".").pop();
+    const generatedName = `${uuidv4()}.${ext}`;
+    const storagePath = `${userId}/${product_id}/${generatedName}`;
+
+    // Upload vers Supabase Storage
+    const { error: uploadError } = await supabase.storage
+      .from(BUCKET)
+      .upload(storagePath, buffer, {
+        contentType: mimetype,
+        upsert: false
+      });
+
+    if (uploadError) {
+      console.error("Supabase storage upload error:", uploadError);
+      return res.status(500).json({ error: "Erreur stockage fichier", details: uploadError.message || uploadError });
+    }
+
+    // Insert metadata (utilise la nouvelle taille optimisée)
+    const { data: meta, error: metaErr } = await supabase
+      .from("product_files")
+      .insert([{
+        product_id,
+        owner_id: userId, 
+        storage_path: storagePath,
+        filename: originalname,
+        content_type: mimetype,
+        size_bytes: size, 
+        is_public: false
+      }])
+      .select()
+      .single();
+
+    if (metaErr) {
+      // rollback storage (best effort)
+      await supabase.storage.from(BUCKET).remove([storagePath]).catch(() => {});
+      console.error("Error inserting file metadata:", metaErr);
+      return res.status(500).json({ error: "Erreur enregistrement metadata", details: metaErr.message || metaErr });
+    }
+
+    const publicURL = `${supabaseUrl}/storage/v1/object/public/${BUCKET}/${storagePath}`;
+
+    return res.status(201).json({ 
+        message: "Fichier uploadé et optimisé ✅", 
+        file: { ...meta, url: publicURL }
+    });
+  } catch (err) {
+    console.error("uploadFile error:", err);
+    return res.status(500).json({ error: "Erreur serveur", details: err.message || err });
+  }
 }
 
-startServer();
+// ... Les autres fonctions (getFileDownloadUrl, deleteFile, listFilesForProduct) restent inchangées.

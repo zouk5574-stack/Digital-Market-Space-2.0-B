@@ -6,8 +6,8 @@ import { supabase } from '../src/server.js';
 import dayjs from 'dayjs'; 
 
 // Récupération des variables d'environnement
-// 🚨 Rétention agressive (par défaut 15 jours pour survie plan gratuit)
-const FILE_RETENTION_DAYS = Number(process.env.FILE_RETENTION_DAYS || 15); 
+// 🚨 Rétention agressive (par défaut 14 jours pour survie plan gratuit)
+const FILE_RETENTION_DAYS = Number(process.env.FILE_RETENTION_DAYS || 14); 
 const BUCKET = process.env.SUPABASE_FILES_BUCKET || "product-files";
 
 const cleanupFiles = async () => {

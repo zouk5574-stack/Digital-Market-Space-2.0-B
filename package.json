@@ -5,8 +5,8 @@
   "main": "src/server.js",
   "scripts": {
     "build": "npm install",
-    "dev": "nodemon src/server.js",
-    "start": "node src/server.js"
+    "dev": "nodemon server.js",
+    "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.18.2",

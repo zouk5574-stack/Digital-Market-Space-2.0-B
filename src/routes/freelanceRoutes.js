@@ -1,13 +1,14 @@
 import express from "express";
 import { body, param, validationResult } from "express-validator";
 import { authMiddleware } from "../middleware/authMiddleware.js";
-import { requireRole } from "../middleware/roleMiddleware.js"; // ⬅️ IMPORT CRITIQUE
+import { requireRole } from "../middleware/roleMiddleware.js"; 
 import {
   createFreelanceMission,
   applyToMission,
+  assignSellerToMission, // ⬅️ Fonction Escrow importée
   deliverWork,
   validateDelivery
-} from "../controllers/freelanceController.js";
+} from "../controllers/freelanceController.js"; 
 
 const router = express.Router();
 
@@ -19,12 +20,12 @@ const validateRequest = (req, res, next) => {
 };
 
 // ========================
-// ✅ Créer une mission (ACHETEUR/ADMIN)
+// 1. Créer une mission (ACHETEUR/ADMIN)
 // ========================
 router.post(
   "/missions",
   authMiddleware,
-  requireRole(["ACHETEUR", "ADMIN"]), // ⬅️ SÉCURITÉ PAR RÔLE
+  requireRole(["ACHETEUR", "ADMIN"]), 
   body("title").isString().notEmpty().withMessage("Le titre est obligatoire"),
   body("description").isString().notEmpty().withMessage("La description est obligatoire"),
   body("budget").isFloat({ min: 1 }).withMessage("Le budget doit être un nombre positif (minimum 1)"),
@@ -34,12 +35,12 @@ router.post(
 );
 
 // ========================
-// ✅ Postuler à une mission (VENDEUR/ADMIN)
+// 2. Postuler à une mission (VENDEUR/ADMIN)
 // ========================
 router.post(
   "/missions/:id/apply",
   authMiddleware,
-  requireRole(["VENDEUR", "ADMIN"]), // ⬅️ SÉCURITÉ PAR RÔLE
+  requireRole(["VENDEUR", "ADMIN"]), 
   param("id").isUUID().withMessage("ID de mission invalide"),
   body("proposal").isString().notEmpty().withMessage("La proposition est obligatoire"),
   body("proposed_price").isFloat({ min: 1 }).withMessage("Le prix proposé doit être un nombre positif (minimum 1)"),
@@ -47,16 +48,28 @@ router.post(
   applyToMission
 );
 
+// 🛑 ========================
+// 3. Attribuer un vendeur (ACHETEUR/ADMIN) - AVEC ESCROW
 // ========================
-// ✅ Livrer un travail (VENDEUR/ADMIN)
-// La vérification que le VENDEUR est celui assigné à la mission se fera dans le Controller.
+router.post(
+  "/missions/:missionId/assign",
+  authMiddleware,
+  requireRole(["ACHETEUR", "ADMIN"]), 
+  param("missionId").isUUID().withMessage("ID de mission invalide"),
+  body("application_id").isUUID().withMessage("L'ID de la candidature est obligatoire"), // Nécessaire pour obtenir le vendeur et le prix
+  validateRequest,
+  assignSellerToMission // ⬅️ La fonction Escrow est appelée ici
+);
+
+
+// ========================
+// 4. Livrer un travail (VENDEUR/ADMIN)
 // ========================
 router.post(
   "/missions/:id/deliver",
   authMiddleware,
-  requireRole(["VENDEUR", "ADMIN"]), // ⬅️ SÉCURITÉ PAR RÔLE
+  requireRole(["VENDEUR", "ADMIN"]), 
   param("id").isUUID().withMessage("ID de mission invalide"),
-  // Le champ 'file_url' du schéma 'freelance_deliveries' indique qu'on devrait avoir un lien.
   body("file_url").isURL().withMessage("L'URL du fichier de livraison est obligatoire et doit être valide"),
   body("delivery_note").isString().notEmpty().withMessage("Une note de livraison est requise"),
   validateRequest,
@@ -64,13 +77,12 @@ router.post(
 );
 
 // ========================
-// ✅ Valider une livraison (ACHETEUR/ADMIN)
-// L'acheteur doit être celui qui a créé la mission. Vérification dans le Controller.
+// 5. Valider une livraison (ACHETEUR/ADMIN)
 // ========================
 router.put(
   "/missions/:missionId/deliveries/:deliveryId/validate",
   authMiddleware,
-  requireRole(["ACHETEUR", "ADMIN"]), // ⬅️ SÉCURITÉ PAR RÔLE
+  requireRole(["ACHETEUR", "ADMIN"]), 
   param("missionId").isUUID().withMessage("ID de mission invalide"),
   param("deliveryId").isUUID().withMessage("ID de livraison invalide"),
   validateRequest,

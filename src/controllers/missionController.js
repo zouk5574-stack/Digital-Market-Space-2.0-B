@@ -72,4 +72,3 @@ const assignSellerToMission = async (req, res) => {
 }
 
 // ... Export de la fonction
-              

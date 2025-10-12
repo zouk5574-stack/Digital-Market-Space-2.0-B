@@ -1,7 +1,10 @@
+// src/controllers/fedapayController.js
+
 import { supabase } from "../server.js";
 import axios from "axios";
 import crypto from "crypto"; 
 import { addLog } from "./logController.js";
+import fedapayService from '../services/fedapayService.js'; // 🥂 NOUVEL IMPORT
 
 // Taux de commission de la plateforme
 const PLATFORM_COMMISSION_RATE = 0.10; // 10%
@@ -45,7 +48,7 @@ async function updateTransactionWithRetry(fedapayTransactionId, newStatus) {
 }
 
 // ========================
-// 🎯 1. Initier le paiement d'une COMMANDE
+// 🎯 1. Initier le paiement d'une COMMANDE (Produit)
 // ========================
 
 /**
@@ -63,22 +66,23 @@ export async function initFedapayPayment(req, res) {
     // 1. Récupérer Commande
     const { data: order, error: orderError } = await supabase
         .from('orders')
-        // NOTE: total_amount est la colonne dans votre schéma
-        .select('id, total_amount, status, buyer_id')
+        // ATTENTION : On utilise total_price si c'est le nom de colonne correct, sinon total_amount
+        .select('id, total_price, status, buyer_id') 
         .eq('id', order_id)
         .single();
 
     if (orderError || !order || order.buyer_id !== buyer_id) {
         return res.status(403).json({ error: "Accès refusé ou commande introuvable." });
     }
-    if (order.status !== 'pending') { // Utilisation du statut 'pending' de votre schéma 'orders'
+    // Mise à jour du statut attendu par orderController.js
+    if (order.status !== 'pending_payment') { 
         return res.status(400).json({ error: "Cette commande n'est pas en attente de paiement." });
     }
     
-    // 2. Récupérer la Clé Secrète (Config Fedapay)
+    // 2. Récupérer les Clés Secrète et Publique de la DB
     const { data: provider, error: providerError } = await supabase
         .from("payment_providers")
-        .select("secret_key, public_key, name")
+        .select("secret_key, public_key")
         .eq("name", "fedapay")
         .eq("is_active", true)
         .single();
@@ -86,40 +90,35 @@ export async function initFedapayPayment(req, res) {
     if (providerError || !provider) {
           return res.status(503).json({ error: "Le fournisseur de paiement Fedapay n'est pas actif." });
     }
-
-    // --- Appel API Fedapay ---
-    const payload = {
-      description: `Paiement pour commande #${order_id}`,
-      amount: order.total_amount, // Utilisation de total_amount
-      currency: "XOF", 
-      metadata: {
-        buyer_id: buyer_id,
-        order_id: order_id,
-      },
-      callback_url: `${process.env.BASE_URL}/api/fedapay/webhook`, 
-    };
     
-    const fedapayResponse = await axios.post(
-        process.env.FEDAPAY_API_URL || "https://sandbox-api.fedapay.com/v1/transactions", 
-        payload,
-        {
-          headers: {
-            "Authorization": `Bearer ${provider.secret_key}`, 
-            "Content-Type": "application/json",
-          },
-        }
+    // Déterminer l'environnement
+    const env = process.env.NODE_ENV === 'production' ? 'live' : 'sandbox';
+    
+    // 3. Mise à jour préliminaire du statut à 'processing_payment'
+    await supabase.from('orders').update({ status: 'processing_payment' }).eq('id', order_id);
+
+    // 4. --- 💳 APPEL AU SERVICE FEDAPAY AVEC CLÉ DYNAMIQUE ---
+    const redirect_url = await fedapayService.createProductOrderLink(
+        provider.secret_key, // Clé secrète
+        env,
+        order.total_price, // Montant réel à payer
+        `Paiement pour commande #${order_id}`, 
+        order_id,
+        buyer_id
     );
 
-    const transaction = fedapayResponse.data.transaction;
-    
-    // 3. Sauvegarder la transaction externe dans la table 'transactions'
+    if (!redirect_url) {
+        throw new Error("Échec de la connexion à FedaPay ou génération du lien échouée.");
+    }
+
+    // 5. Sauvegarder la transaction interne (sera mise à jour par le webhook)
+    // NOTE: On insère une transaction 'pending' avant d'envoyer l'utilisateur
     const { error: transactionError } = await supabase.from("transactions").insert([
       {
         user_id: buyer_id,
-        // Pas de order_id direct dans 'transactions', mais bien dans le log ou metadata
-        provider: provider.name,
-        provider_id: transaction.id, // ID Fedapay
-        amount: order.total_amount,
+        provider: 'fedapay',
+        provider_id: null, // Sera mis à jour par le webhook
+        amount: order.total_price,
         status: "pending",
         description: `Initiation pour commande #${order_id}`,
       },
@@ -127,21 +126,19 @@ export async function initFedapayPayment(req, res) {
     
     if (transactionError) throw transactionError;
 
-    // 4. Mettre à jour la commande
-    // NOTE: Pas de colonne external_transaction_id dans 'orders'. On utilise le log.
-    await supabase.from('orders').update({ status: 'processing_payment' }).eq('id', order_id);
-    await addLog(buyer_id, 'PAYMENT_INITIATED', { order_id: order_id, fedapay_id: transaction.id, amount: order.total_amount });
-
+    await addLog(buyer_id, 'PAYMENT_INITIATED', { order_id: order_id, amount: order.total_price });
 
     return res.json({
       message: "Redirection vers le paiement ✅",
-      transactionId: transaction.id,
-      checkout_url: transaction.checkout_url,
-      public_key: provider.public_key
+      checkout_url: redirect_url, // URL réelle de redirection FedaPay
+      public_key: provider.public_key // Clé publique pour l'intégration frontend
     });
+
   } catch (err) {
-    console.error("Erreur init paiement Fedapay :", err.response?.data || err.message);
-    res.status(500).json({ error: "Échec de l'initialisation du paiement.", details: err.response?.data || err.message });
+    console.error("Erreur init paiement Fedapay :", err.message);
+    // En cas d'échec, remettre la commande à 'pending_payment'
+    await supabase.from('orders').update({ status: 'pending_payment' }).eq('id', req.body.order_id);
+    res.status(500).json({ error: "Échec de l'initialisation du paiement.", details: err.message });
   }
 }
 
@@ -150,7 +147,7 @@ export async function initFedapayPayment(req, res) {
 // ========================
 
 /**
- * Reçoit les événements de Fedapay, vérifie la signature, et crédite les vendeurs.
+ * Reçoit les événements de Fedapay, vérifie la signature, et gère les flux (Escrow ou Commande).
  */
 export async function handleFedapayWebhook(req, res) {
   // ⚠️ CRITIQUE : Le middleware doit avoir mis le corps brut dans req.rawBody
@@ -186,86 +183,132 @@ export async function handleFedapayWebhook(req, res) {
 
   const { event, data } = req.body; 
   const external_transaction_id = data.id; 
-  const order_id = data.metadata?.order_id;
-  // La variable total_amount_paid n'est pas utilisée directement, mais son montant est implicite
-
+  const metadata = data.metadata || {};
+  const flowType = metadata.type; // 'ESCROW_SERVICE' ou 'ORDER_PRODUCT'
+  
   if (event !== 'transaction.approved') {
-      // Ignorer tous les autres événements
+      // Pour les transactions annulées/échouées, mettre à jour le statut dans la DB si nécessaire
+      // Logique de gestion des échecs pour les deux types de flux...
+      if (flowType === 'ESCROW_SERVICE' && metadata.mission_id) {
+          // Remettre la mission à 'open'
+          await supabase.from('freelance_missions').update({ status: 'open', seller_id: null, final_price: null }).eq('id', metadata.mission_id);
+      } else if (flowType === 'ORDER_PRODUCT' && metadata.order_id) {
+          // Remettre la commande à 'pending_payment'
+          await supabase.from('orders').update({ status: 'pending_payment' }).eq('id', metadata.order_id);
+      }
+
+      if (event === 'transaction.failed' || event === 'transaction.canceled') {
+          await addLog(null, `PAYMENT_${event.toUpperCase()}`, { flow: flowType, fedapay_id: external_transaction_id, metadata });
+      }
+
       return res.status(200).end(); 
   }
   
   try {
-      // 3. Mise à jour avec Retry, et récupération de l'order_id
-      // On utilise 'approved' car l'ID de la transaction Fedapay est ce que nous avons
-      const transactionData = await updateTransactionWithRetry(external_transaction_id, 'approved'); 
+      
+      // 3. Mise à jour de la transaction interne (pour l'idempotence)
+      const { error: updateTransError } = await supabase
+          .from("transactions")
+          .update({ status: 'approved', provider_id: external_transaction_id })
+          .eq("provider_id", external_transaction_id) 
+          .eq("status", "pending") 
+          .single();
 
-      if (!transactionData) {
-          // Si la transaction n'était pas 'pending' ou a déjà été traitée, on arrête ici
-          return res.status(200).json({ message: "Transaction déjà traitée ou échec de mise à jour (ignorer)." });
+      // Si déjà traité ou échec de mise à jour, on ignore (idempotence)
+      if (updateTransError) {
+          console.warn(`Transaction ${external_transaction_id} déjà traitée ou introuvable.`);
+          return res.status(200).end();
       }
 
-      // 4. Récupérer les articles de la commande (pour la commission et la répartition)
-      const { data: orderItems, error: itemsError } = await supabase
-          .from('order_items')
-          .select('seller_id, price, quantity')
-          .eq('order_id', order_id);
+      // 4. Distinction des Flux : Services (Escrow) vs Produits (Commande)
+      if (flowType === 'ESCROW_SERVICE') {
+          
+          const mission_id = metadata.mission_id;
+          const buyer_id = metadata.buyer_id;
 
-      if (itemsError || !orderItems || orderItems.length === 0) {
-          console.error("WEBHOOK ERROR: Commande payée sans articles :", order_id);
-          await addLog(null, 'WEBHOOK_ERROR', { error: 'Order items missing after approval', order_id });
-          await supabase.from("transactions").update({ status: "failed" }).eq("provider_id", external_transaction_id);
-          return res.status(500).end(); 
-      }
-      
-      // 5. Traitement des fonds, calcul de la commission et crédits
-      const sellerFunds = {};
-      let totalCommission = 0;
-      
-      for (const item of orderItems) {
-          const saleAmount = item.price * item.quantity;
-          const commission = saleAmount * PLATFORM_COMMISSION_RATE;
-          const netAmount = saleAmount - commission;
-
-          sellerFunds[item.seller_id] = (sellerFunds[item.seller_id] || { net: 0 });
-          sellerFunds[item.seller_id].net += netAmount;
-          totalCommission += commission; // Suivi de la commission
-      }
-      
-      // 6. Créditer le portefeuille des vendeurs (RPC)
-      const creditPromises = [];
-
-      for (const [seller_id, amounts] of Object.entries(sellerFunds)) {
-          // Créditer le portefeuille du vendeur du MONTANT NET (Après commission)
-          creditPromises.push(
-              // Utilisation du RPC pour garantir la sécurité et l'atomicité du solde
-              supabase.rpc("increment_wallet_balance", {
-                  // NOTE: Remplacer par les noms de paramètres exacts de votre RPC si différents.
-                  user_id_param: seller_id, 
-                  amount_param: amounts.net,
-                  description_param: `Crédit vente commande #${order_id}`
+          // Mettre à jour la mission de 'pending_payment' à 'in_progress'
+          const { data: updatedMission, error: missionError } = await supabase
+              .from('freelance_missions')
+              .update({ 
+                  status: 'in_progress', 
+                  escrow_transaction_id: external_transaction_id // Stocker la référence externe
               })
-          );
+              .eq('id', mission_id)
+              .eq('status', 'pending_payment')
+              .select('id, seller_id, final_price')
+              .single();
+
+          if (missionError || !updatedMission) {
+              console.error("WEBHOOK ERROR: Mission introuvable ou déjà démarrée après paiement:", mission_id);
+              await addLog(buyer_id, 'WEBHOOK_MISSION_ERROR', { error: 'Mission status mismatch', mission_id });
+              return res.status(500).end(); 
+          }
+          
+          await addLog(buyer_id, 'MISSION_ESCROW_COMPLETED', { mission_id, fedapay_id: external_transaction_id, price: updatedMission.final_price });
+          
+          
+      } else if (flowType === 'ORDER_PRODUCT') {
+          
+          const order_id = metadata.order_id;
+
+          // Récupérer les articles pour la répartition
+          const { data: orderItems, error: itemsError } = await supabase
+              .from('order_items')
+              .select('seller_id, price, quantity')
+              .eq('order_id', order_id);
+
+          if (itemsError || !orderItems || orderItems.length === 0) {
+              console.error("WEBHOOK ERROR: Commande payée sans articles :", order_id);
+              await addLog(null, 'WEBHOOK_ORDER_ERROR', { error: 'Order items missing after approval', order_id });
+              return res.status(500).end(); 
+          }
+          
+          // Calcul et crédit des vendeurs
+          const sellerFunds = {};
+          let totalCommission = 0;
+          
+          for (const item of orderItems) {
+              const saleAmount = item.price * item.quantity;
+              const commission = saleAmount * PLATFORM_COMMISSION_RATE;
+              const netAmount = saleAmount - commission;
+
+              sellerFunds[item.seller_id] = (sellerFunds[item.seller_id] || { net: 0 });
+              sellerFunds[item.seller_id].net += netAmount;
+              totalCommission += commission; 
+          }
+          
+          const creditPromises = [];
+          for (const [seller_id, amounts] of Object.entries(sellerFunds)) {
+              creditPromises.push(
+                  supabase.rpc("increment_wallet_balance", {
+                      user_id_param: seller_id, 
+                      amount_param: amounts.net,
+                      description_param: `Crédit vente commande #${order_id}`
+                  })
+              );
+          }
+          
+          await Promise.all(creditPromises); 
+          
+          // Mettre à jour le statut de la commande à 'completed'
+          await supabase
+              .from('orders')
+              .update({ status: 'completed' }) 
+              .eq('id', order_id);
+          
+          await addLog(null, 'ORDER_PAYMENT_COMPLETED', { order_id: order_id, fedapay_id: external_transaction_id, total_commission: totalCommission });
+          
+      } else {
+          console.warn("WEBHOOK ALERT: Type de transaction Fedapay inconnu:", flowType);
       }
-      
-      await Promise.all(creditPromises); // Exécution de tous les crédits en parallèle
-      
-      // 7. Mettre à jour le statut de la commande à 'completed' et log
-      await supabase
-          .from('orders')
-          // NOTE: La colonne 'commission_total' n'est pas dans le schéma 'orders'
-          .update({ status: 'completed', created_at: new Date().toISOString() }) // created_at utilisé pour simuler 'payment_date'
-          .eq('id', order_id);
-      
-      await addLog(null, 'PAYMENT_COMPLETED', { order_id: order_id, fedapay_id: external_transaction_id, total_commission: totalCommission });
 
 
       res.status(200).end(); 
 
   } catch (err) {
       console.error("Fedapay Webhook processing error:", err);
-      // Remettre la transaction en 'failed' en cas d'échec de la répartition
-      await supabase.from("transactions").update({ status: "failed" }).eq("provider_id", external_transaction_id);
       // Renvoyer 500 pour indiquer à Fedapay de réessayer
       res.status(500).end(); 
   }
-}
+        }
+                          

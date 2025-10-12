@@ -2,6 +2,7 @@
 
 import { supabase } from "../server.js";
 import { addLog } from "./logController.js"; 
+import fedapayService from '../services/fedapayService.js'; // 🥂 NOUVEL IMPORT
 
 // Commission : Taux de commission par défaut pour la plateforme
 const COMMISSION_RATE = 0.10; // 10%
@@ -89,7 +90,7 @@ export async function applyToMission(req, res) {
 
 
 // ========================
-// 🛑 3. Attribuer un vendeur (côté ACHETEUR) - AVEC ESCROW
+// ✅ 3. Attribuer un vendeur (côté ACHETEUR) - INITIATION PAIEMENT FEDAPAY
 // ========================
 export async function assignSellerToMission(req, res) {
     const current_user_id = req.user.db.id;
@@ -101,7 +102,7 @@ export async function assignSellerToMission(req, res) {
         .select(`
             seller_id, 
             proposed_price, 
-            mission:mission_id (buyer_id, budget, status)
+            mission:mission_id (buyer_id, status, title) 
         `)
         .eq("id", application_id)
         .eq("mission_id", mission_id)
@@ -113,7 +114,6 @@ export async function assignSellerToMission(req, res) {
 
     const { mission, seller_id: assignedSellerId, proposed_price: finalPrice } = appData;
     const buyer_id = mission.buyer_id;
-    const mission_budget = mission.budget;
 
     // 2. Vérifications de sécurité et de statut
     if (buyer_id !== current_user_id) {
@@ -123,64 +123,75 @@ export async function assignSellerToMission(req, res) {
         return res.status(400).json({ message: "La mission n'est plus ouverte à l'attribution." });
     }
 
-    // Démarrage d'une transaction de base de données pour l'atomicité de l'Escrow
-    await supabase.rpc('start_transaction'); 
+    // 3. Récupérer la Clé Secrète de la DB
+    const { data: provider, error: providerError } = await supabase
+        .from("payment_providers")
+        .select("secret_key")
+        .eq("name", "fedapay")
+        .eq("is_active", true)
+        .single();
+
+    if (providerError || !provider) {
+          return res.status(503).json({ error: "Le fournisseur de paiement Fedapay n'est pas actif. Contactez l'administrateur." });
+    }
+    
+    const env = process.env.NODE_ENV === 'production' ? 'live' : 'sandbox';
+    
+    // 🛑 Supprime le bloc de transaction RPC local au profit de l'appel FedaPay
     
     try {
-        // --- 🔒 ÉTAPE 1 : Débit du portefeuille de l'Acheteur (ESCROW) ---
-        // Le montant à débiter est le budget initial (mission.budget) ou le proposed_price.
-        // Utilisons le proposed_price comme montant final séquestré.
-        const { data: walletUpdate, error: walletError } = await supabase.rpc('create_escrow_transaction', {
-            p_user_id: buyer_id, 
-            p_amount: finalPrice, 
-            p_description: `Escrow for Mission: ${mission_id}`
-        });
-
-        if (walletError || !walletUpdate || walletUpdate.status !== 'approved') {
-            await supabase.rpc('rollback_transaction');
-            return res.status(400).json({ message: "Échec du séquestre des fonds. Le solde de l'acheteur est insuffisant ou une erreur de transaction est survenue." });
-        }
         
-        const escrowTransactionId = walletUpdate.transaction_id;
-
-        // --- 🚀 ÉTAPE 2 : Attribution de la mission et mise à jour ---
-        const { data: updatedMission, error: updateError } = await supabase
+        // 4. Mise à jour préliminaire de la mission à 'pending_payment'
+        // Le webhook mettra à jour à 'in_progress' après paiement
+        const { error: updateError } = await supabase
             .from('freelance_missions')
             .update({
-                seller_id: assignedSellerId, // Utilisation de seller_id (colonne du schéma)
+                seller_id: assignedSellerId,
                 final_price: finalPrice,
-                status: 'in_progress', 
-                escrow_transaction_id: escrowTransactionId // L'ID de la transaction de séquestre
+                status: 'pending_payment', // En attente de paiement FedaPay
             })
-            .eq('id', mission_id)
-            .select("id, status, seller_id")
-            .single();
+            .eq('id', mission_id);
 
-        if (updateError) {
-            await supabase.rpc('rollback_transaction');
-            return res.status(500).json({ message: "Erreur lors de l'attribution de la mission." });
+        if (updateError) throw updateError;
+        
+        // 5. --- 💳 APPEL AU SERVICE FEDAPAY AVEC CLÉ DYNAMIQUE ---
+        const redirect_url = await fedapayService.createEscrowServiceLink(
+            provider.secret_key, // Clé secrète de la DB
+            env,
+            finalPrice, 
+            `Paiement Escrow : ${mission.title}`, 
+            mission_id,
+            buyer_id
+        );
+
+        if (!redirect_url) {
+             // Rollback de l'attribution si l'initiation échoue
+             await supabase.from('freelance_missions').update({ status: 'open', seller_id: null, final_price: null }).eq('id', mission_id);
+            return res.status(500).json({ message: "Échec de la connexion à FedaPay ou génération du lien échouée." });
         }
 
-        // Si tout est bon
-        await supabase.rpc('commit_transaction');
-        await addLog(buyer_id, 'MISSION_ASSIGNED_ESCROWED', { mission_id, assigned_seller_id: assignedSellerId, escrow_id: escrowTransactionId });
+        await addLog(buyer_id, 'MISSION_PAYMENT_INITIATED_FEDAPAY', { mission_id, assigned_seller_id: assignedSellerId, price: finalPrice });
 
+        // 6. Renvoyer l'URL de redirection au Frontend
         return res.status(200).json({ 
-            message: 'Vendeur attribué et fonds séquestrés ✅', 
-            mission: updatedMission
+            message: 'Redirection vers FedaPay...', 
+            redirect_url: redirect_url // URL réelle fournie par le SDK FedaPay
         });
 
     } catch (e) {
-        // En cas d'exception non gérée, on annule tout
-        await supabase.rpc('rollback_transaction');
-        console.error("Erreur Escrow/Attribution Mission:", e);
-        return res.status(500).json({ message: 'Erreur interne du serveur lors de la transaction Escrow.' });
+        // En cas d'échec (DB ou FedaPay), on remet la mission en statut 'open'
+        await supabase.from('freelance_missions').update({ status: 'open', seller_id: null, final_price: null }).eq('id', mission_id);
+        console.error("Erreur critique lors de l'attribution et paiement FedaPay:", e.message);
+        return res.status(500).json({ 
+            message: 'Erreur interne du serveur lors de la préparation du paiement.', 
+            details: e.message 
+        });
     }
 }
 
 // ========================
 // ✅ 4. Livraison finale par le VENDEUR
-// (Le code a été adapté pour utiliser 'seller_id' qui est le nom de colonne correct)
+// (Code inchangé)
 // ========================
 export async function deliverWork(req, res) {
   try {
@@ -194,7 +205,7 @@ export async function deliverWork(req, res) {
     // 1. Vérifier que ce vendeur est le vendeur ATTRIBUÉ
     const { data: mission, error: missionError } = await supabase
         .from("freelance_missions")
-        .select("id, status, seller_id") // Utilisation de seller_id (nom de colonne correct)
+        .select("id, status, seller_id")
         .eq("id", mission_id)
         .single();
         
@@ -233,7 +244,7 @@ export async function deliverWork(req, res) {
 
 // ========================
 // ✅ 5. Validation par l’acheteur (avec gestion commission)
-// (Le code a été conservé tel quel, car il gère l'application de la commission)
+// (Code inchangé)
 // ========================
 export async function validateDelivery(req, res) {
   // NOTE: Dans un environnement réel, toutes ces étapes (DB, wallet) seraient dans une SEULE transaction
@@ -260,9 +271,6 @@ export async function validateDelivery(req, res) {
       return res.status(404).json({ error: "Livraison introuvable" });
     }
     
-    // NOTE CRITIQUE : Libération de l'Escrow non implémentée ici (complexité RPC). 
-    // On suppose que le crédit au vendeur (point 5) est l'étape de libération.
-
     // 2. Vérification d'autorisation (acheteur, statut)
     if (delivery.mission.buyer_id !== buyer_id) {
       return res.status(403).json({ error: "Accès refusé. Vous n'êtes pas l'acheteur de cette mission." });
@@ -293,6 +301,9 @@ export async function validateDelivery(req, res) {
       .eq("id", delivery.mission_id);
 
     // 5. Libérer les fonds (Crédit au vendeur via RPC)
+    // NOTE: On suppose que c'est ici que l'argent séquestré par Fedapay est transféré au vendeur.
+    // Dans un système réel, cela impliquerait un appel à l'API Fedapay pour effectuer un transfert/virement,
+    // mais nous simulons le crédit du portefeuille local ici.
     const { error: walletError } = await supabase.rpc("increment_wallet_balance", {
       user_id_param: delivery.seller_id, 
       amount_param: netAmount
@@ -300,11 +311,8 @@ export async function validateDelivery(req, res) {
 
     if (walletError) throw walletError;
 
-    // 6. Enregistrement des transactions (si les tables existent, sinon utiliser les logs)
-    // NOTE: On suppose que ces tables (wallet_transactions, commissions) sont gérées soit par le RPC,
-    // soit sont des tables de logs supplémentaires non incluses dans le schéma initial.
-    
-    await addLog(buyer_id, 'MISSION_VALIDATED_PAID', { mission_id: delivery.mission_id, amount: finalPrice });
+    // 6. Log
+    await addLog(buyer_id, 'MISSION_VALIDATED_PAID', { mission_id: delivery.mission_id, amount: finalPrice, fedapay_escrow_id: delivery.mission.escrow_transaction_id });
 
     return res.json({ 
         message: "Livraison validée ✅ et paiement libéré",
@@ -315,5 +323,5 @@ export async function validateDelivery(req, res) {
     console.error("Validate delivery error:", err);
     return res.status(500).json({ error: "Erreur serveur lors de la validation et du transfert de fonds.", details: err.message || err });
   }
-        }
+      }
       

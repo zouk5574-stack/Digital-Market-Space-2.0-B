@@ -1,4 +1,4 @@
-// src/routes/adminRoutes.js
+// src/routes/adminRoutes.js (VERSION CORRIGÉE)
 
 import express from "express";
 import { authenticateJWT } from "../middleware/authMiddleware.js";
@@ -9,6 +9,12 @@ import {
     listPayouts, 
     processPayout 
 } from "../controllers/adminController.js";
+import { 
+    sendBulkNotification,
+    getNotificationHistory,
+    adminDeleteNotification,
+    getUserStats
+} from "../controllers/notificationController.js";
 
 const router = express.Router();
 
@@ -30,6 +36,18 @@ router.put("/users/:userId/status", toggleUserStatus);
 router.get("/payouts", listPayouts);
 // Approuver ou rejeter une demande de retrait
 router.post("/payouts/:payoutId/process", processPayout);
+
+// ------------------------------------
+// 🔔 Gestion des Notifications (NOUVEAU)
+// ------------------------------------
+// Envoyer une notification en masse
+router.post("/notifications/send-bulk", sendBulkNotification);
+// Historique des notifications envoyées
+router.get("/notifications/history", getNotificationHistory);
+// Supprimer une notification (admin)
+router.delete("/notifications/:id", adminDeleteNotification);
+// Statistiques utilisateurs pour les notifications
+router.get("/users/stats", getUserStats);
 
 // ------------------------------------
 // 📊 Logs d'activité (Optionnel : si vous avez une table de logs)

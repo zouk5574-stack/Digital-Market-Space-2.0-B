@@ -4,17 +4,20 @@ import { authenticateJWT } from "../middleware/authMiddleware.js";
 import { aiRateLimit } from "../middleware/aiRateLimit.js";
 import { 
   handleAIMessage, 
-  getConversations 
+  getConversations,
+  deleteConversation,
+  generateAIContent
 } from "../controllers/aiAssistantController.js";
 
 const router = express.Router();
 
-// Appliquer l'authentification et le rate limiting à toutes les routes IA
 router.use(authenticateJWT);
 router.use(aiRateLimit);
 
 // Routes de l'assistant IA
 router.post("/assistant", handleAIMessage);
 router.get("/conversations", getConversations);
+router.delete("/conversations/:conversationId", deleteConversation);
+router.post("/generate-content", generateAIContent);
 
 export default router;

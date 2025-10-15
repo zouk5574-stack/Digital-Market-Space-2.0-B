@@ -1,5 +1,7 @@
 // src/services/contextService.js
-import { supabase } from "../server.js";
+
+// ✅ CORRECT - Chemin relatif depuis services/ vers server.js
+import { supabase } from '../server.js';
 
 export const contextService = {
   async buildUserContext(user, additionalContext = {}) {
@@ -45,7 +47,10 @@ export const contextService = {
       .eq('id', userId)
       .single();
 
-    if (error) throw error;
+    if (error) {
+      console.error("Error fetching user data:", error);
+      throw error;
+    }
     return userData;
   },
 
@@ -55,23 +60,37 @@ export const contextService = {
       return { orderCount: 0, productCount: 0, missionCount: 0 };
     }
 
-    // Récupération normale pour vendeurs/acheteurs
-    const { count: orderCount } = await supabase
-      .from('orders')
-      .select('*', { count: 'exact', head: true })
-      .eq('buyer_id', userId);
+    try {
+      // Récupération normale pour vendeurs/acheteurs
+      const { count: orderCount, error: orderError } = await supabase
+        .from('orders')
+        .select('*', { count: 'exact', head: true })
+        .eq('buyer_id', userId);
 
-    const { count: productCount } = await supabase
-      .from('products')
-      .select('*', { count: 'exact', head: true })
-      .eq('owner_id', userId);
+      const { count: productCount, error: productError } = await supabase
+        .from('products')
+        .select('*', { count: 'exact', head: true })
+        .eq('owner_id', userId);
 
-    const { count: missionCount } = await supabase
-      .from('freelance_missions')
-      .select('*', { count: 'exact', head: true })
-      .or(`buyer_id.eq.${userId},seller_id.eq.${userId}`);
+      const { count: missionCount, error: missionError } = await supabase
+        .from('freelance_missions')
+        .select('*', { count: 'exact', head: true })
+        .or(`buyer_id.eq.${userId},seller_id.eq.${userId}`);
 
-    return { orderCount, productCount, missionCount };
+      if (orderError || productError || missionError) {
+        console.error("Error fetching user activities:", { orderError, productError, missionError });
+        return { orderCount: 0, productCount: 0, missionCount: 0 };
+      }
+
+      return { 
+        orderCount: orderCount || 0, 
+        productCount: productCount || 0, 
+        missionCount: missionCount || 0 
+      };
+    } catch (error) {
+      console.error("Error in getUserActivities:", error);
+      return { orderCount: 0, productCount: 0, missionCount: 0 };
+    }
   },
 
   async getPlatformContext(userRole) {
@@ -84,13 +103,23 @@ export const contextService = {
 
     // Paramètres admin SEULEMENT pour les admins
     if (userRole === 'ADMIN') {
-      const { data: adminSettings } = await supabase
-        .from('settings')
-        .select('key, value')
-        .in('key', ['shop_limit', 'max_commission', 'system_status']);
-      
-      // Fusionner avec les settings publics
-      return { ...publicSettings, ...this.parseAdminSettings(adminSettings) };
+      try {
+        const { data: adminSettings, error } = await supabase
+          .from('settings')
+          .select('key, value')
+          .in('key', ['shop_limit', 'max_commission', 'system_status']);
+
+        if (error) {
+          console.error("Error fetching admin settings:", error);
+          return publicSettings;
+        }
+        
+        // Fusionner avec les settings publics
+        return { ...publicSettings, ...this.parseAdminSettings(adminSettings) };
+      } catch (error) {
+        console.error("Error in getPlatformContext for admin:", error);
+        return publicSettings;
+      }
     }
 
     return publicSettings;
@@ -113,33 +142,47 @@ export const contextService = {
       username: userData.username
     };
 
-    // Ajouter des données spécifiques selon le rôle
-    if (userRole === 'VENDEUR') {
-      const { count: shopsCount } = await supabase
-        .from('shops')
-        .select('*', { count: 'exact', head: true })
-        .eq('owner_id', userData.id);
+    try {
+      // Ajouter des données spécifiques selon le rôle
+      if (userRole === 'VENDEUR') {
+        const { count: shopsCount, error } = await supabase
+          .from('shops')
+          .select('*', { count: 'exact', head: true })
+          .eq('owner_id', userData.id);
+
+        if (error) {
+          console.error("Error fetching shops count:", error);
+          return {
+            ...baseData,
+            balance: userData.wallets?.balance || 0,
+            shopCount: 0
+          };
+        }
         
+        return {
+          ...baseData,
+          balance: userData.wallets?.balance || 0,
+          shopCount: shopsCount || 0
+        };
+      }
+
+      if (userRole === 'ACHETEUR') {
+        return {
+          ...baseData,
+          balance: userData.wallets?.balance || 0
+        };
+      }
+
+      // ADMIN - données minimales
       return {
         ...baseData,
-        balance: userData.wallets?.balance || 0,
-        shopCount: shopsCount || 0
+        balance: 0,
+        shopCount: 0
       };
+    } catch (error) {
+      console.error("Error in getSafeUserData:", error);
+      return baseData;
     }
-
-    if (userRole === 'ACHETEUR') {
-      return {
-        ...baseData,
-        balance: userData.wallets?.balance || 0
-      };
-    }
-
-    // ADMIN - données minimales
-    return {
-      ...baseData,
-      balance: 0,
-      shopCount: 0
-    };
   },
 
   determineUserRole(userData) {
@@ -169,3 +212,5 @@ export const contextService = {
     };
   }
 };
+
+export default contextService;

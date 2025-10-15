@@ -21,7 +21,7 @@ export const contextService = {
         commissionRate: 10, // 10%
         shopLimit: 3,
         withdrawalProcess: "Fedapay",
-        supportEmail: "support@digitalmarket.com"
+        supportEmail: "digitalmarketspace488@gmail.com"
       },
       currentContext: additionalContext,
       timestamp: new Date().toISOString()

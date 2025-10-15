@@ -18,129 +18,6 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
-export async function handleAIMessage(req, res) {
-  const startTime = Date.now();
-  
-  try {
-    const user = req.user.db;
-    const { message, context = {} } = req.body;
-    const ipAddress = req.ip || req.connection.remoteAddress;
-    const userAgent = req.get('User-Agent') || 'unknown';
-
-    // Validation
-    if (!message || message.trim().length === 0) {
-      return res.status(400).json({ 
-        error: "Message vide",
-        code: "EMPTY_MESSAGE"
-      });
-    }
-
-    if (message.length > 1000) {
-      return res.status(400).json({
-        error: "Message trop long (max 1000 caractères)",
-        code: "MESSAGE_TOO_LONG"
-      });
-    }
-
-    // 1. Préparer le contexte utilisateur
-    const userContext = await contextService.buildUserContext(user, context);
-    
-    // 2. VALIDATION DE SÉCURITÉ
-    try {
-      validateUserAccess(userContext, message);
-    } catch (accessError) {
-      await addSecurityLog(user.id, 'ACCESS_VIOLATION_ATTEMPT', {
-        message: message.substring(0, 100),
-        userRole: userContext.userRole,
-        ipAddress,
-        userAgent
-      });
-
-      return res.json({
-        message: "Je ne peux pas traiter cette demande. Pour les questions techniques, veuillez contacter le support.",
-        suggestions: getSecurityFallbackSuggestions(userContext.userRole),
-        isError: true,
-        code: "ACCESS_RESTRICTED"
-      });
-    }
-    
-    // 3. Récupérer l'historique de conversation
-    const conversationHistory = await getOrCreateConversation(user.id, context.conversationId);
-    
-    // 4. Construire le prompt contextuel sécurisé
-    const systemPrompt = buildSystemPrompt(userContext);
-    
-    // 5. Appeler le service OpenAI avec timeout
-    const aiResponse = await Promise.race([
-      openAIService.sendMessage({
-        message: message.trim(),
-        systemPrompt,
-        conversationHistory: conversationHistory.messages.slice(-6),
-        userContext
-      }),
-      new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("TIMEOUT")), 30000)
-      )
-    ]);
-
-    // 6. Sauvegarder la conversation
-    const updatedConversation = await saveConversationMessage(
-      conversationHistory.id,
-      user.id,
-      message,
-      aiResponse.content,
-      userContext,
-      aiResponse.usage
-    );
-
-    // 7. Logger l'interaction
-    const processingTime = Date.now() - startTime;
-    await addLog(user.id, 'AI_ASSISTANT_QUERY', {
-      conversationId: conversationHistory.id,
-      messageLength: message.length,
-      responseLength: aiResponse.content.length,
-      tokensUsed: aiResponse.usage?.total_tokens,
-      processingTime,
-      ipAddress,
-      userAgent: userAgent.substring(0, 200)
-    });
-
-    res.json({
-      message: aiResponse.content,
-      suggestions: generateQuickSuggestions(userContext, aiResponse.content),
-      conversationId: conversationHistory.id,
-      usage: aiResponse.usage,
-      processingTime
-    });
-
-  } catch (error) {
-    console.error("AI Assistant error:", error);
-    
-    // Logger l'erreur
-    await addLog(req.user.db.id, 'AI_ASSISTANT_ERROR', {
-      error: error.message,
-      code: error.code
-    });
-
-    // Messages d'erreur spécifiques
-    let errorMessage = "Je rencontre des difficultés techniques. Veuillez réessayer dans quelques instants.";
-    let suggestions = ["Réessayer", "Contacter le support"];
-    
-    if (error.message.includes("TIMEOUT")) {
-      errorMessage = "La requête a pris trop de temps. Veuillez réessayer avec une question plus courte.";
-    } else if (error.message.includes("quota") || error.message.includes("billing")) {
-      errorMessage = "Service IA temporairement indisponible. Notre équipe technique a été alertée.";
-    }
-
-    res.status(500).json({
-      message: errorMessage,
-      suggestions: suggestions,
-      isError: true,
-      code: error.message.includes("TIMEOUT") ? "TIMEOUT" : "SERVICE_UNAVAILABLE"
-    });
-  }
-}
-
 // VALIDATION D'ACCÈS SÉCURISÉE
 function validateUserAccess(userContext, message) {
   const { userRole } = userContext;
@@ -402,7 +279,139 @@ function generateQuickSuggestions(userContext, lastResponse) {
   return baseSuggestions[userRole] || baseSuggestions.ACHETEUR;
 }
 
-// NOUVELLE FONCTION: Génération de contenu
+function getFallbackContent(type, parameters) {
+  const fallbacks = {
+    product_description: `Découvrez notre ${parameters.productName} - ${parameters.features}. Produit de qualité, livraison rapide.`,
+    mission_brief: `Mission: ${parameters.title}. Budget: ${parameters.budget}. Délai: ${parameters.deadline}. Compétences: ${parameters.skills}.`
+  };
+  
+  return fallbacks[type] || "Contenu non disponible pour le moment.";
+}
+
+// FONCTIONS PRINCIPALES EXPORTÉES
+export async function handleAIMessage(req, res) {
+  const startTime = Date.now();
+  
+  try {
+    const user = req.user.db;
+    const { message, context = {} } = req.body;
+    const ipAddress = req.ip || req.connection.remoteAddress;
+    const userAgent = req.get('User-Agent') || 'unknown';
+
+    // Validation
+    if (!message || message.trim().length === 0) {
+      return res.status(400).json({ 
+        error: "Message vide",
+        code: "EMPTY_MESSAGE"
+      });
+    }
+
+    if (message.length > 1000) {
+      return res.status(400).json({
+        error: "Message trop long (max 1000 caractères)",
+        code: "MESSAGE_TOO_LONG"
+      });
+    }
+
+    // 1. Préparer le contexte utilisateur
+    const userContext = await contextService.buildUserContext(user, context);
+    
+    // 2. VALIDATION DE SÉCURITÉ
+    try {
+      validateUserAccess(userContext, message);
+    } catch (accessError) {
+      await addSecurityLog(user.id, 'ACCESS_VIOLATION_ATTEMPT', {
+        message: message.substring(0, 100),
+        userRole: userContext.userRole,
+        ipAddress,
+        userAgent
+      });
+
+      return res.json({
+        message: "Je ne peux pas traiter cette demande. Pour les questions techniques, veuillez contacter le support.",
+        suggestions: getSecurityFallbackSuggestions(userContext.userRole),
+        isError: true,
+        code: "ACCESS_RESTRICTED"
+      });
+    }
+    
+    // 3. Récupérer l'historique de conversation
+    const conversationHistory = await getOrCreateConversation(user.id, context.conversationId);
+    
+    // 4. Construire le prompt contextuel sécurisé
+    const systemPrompt = buildSystemPrompt(userContext);
+    
+    // 5. Appeler le service OpenAI avec timeout
+    const aiResponse = await Promise.race([
+      openAIService.sendMessage({
+        message: message.trim(),
+        systemPrompt,
+        conversationHistory: conversationHistory.messages.slice(-6),
+        userContext
+      }),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("TIMEOUT")), 30000)
+      )
+    ]);
+
+    // 6. Sauvegarder la conversation
+    const updatedConversation = await saveConversationMessage(
+      conversationHistory.id,
+      user.id,
+      message,
+      aiResponse.content,
+      userContext,
+      aiResponse.usage
+    );
+
+    // 7. Logger l'interaction
+    const processingTime = Date.now() - startTime;
+    await addLog(user.id, 'AI_ASSISTANT_QUERY', {
+      conversationId: conversationHistory.id,
+      messageLength: message.length,
+      responseLength: aiResponse.content.length,
+      tokensUsed: aiResponse.usage?.total_tokens,
+      processingTime,
+      ipAddress,
+      userAgent: userAgent.substring(0, 200)
+    });
+
+    res.json({
+      message: aiResponse.content,
+      suggestions: generateQuickSuggestions(userContext, aiResponse.content),
+      conversationId: conversationHistory.id,
+      usage: aiResponse.usage,
+      processingTime
+    });
+
+  } catch (error) {
+    console.error("AI Assistant error:", error);
+    
+    // Logger l'erreur
+    await addLog(req.user.db.id, 'AI_ASSISTANT_ERROR', {
+      error: error.message,
+      code: error.code
+    });
+
+    // Messages d'erreur spécifiques
+    let errorMessage = "Je rencontre des difficultés techniques. Veuillez réessayer dans quelques instants.";
+    let suggestions = ["Réessayer", "Contacter le support"];
+    
+    if (error.message.includes("TIMEOUT")) {
+      errorMessage = "La requête a pris trop de temps. Veuillez réessayer avec une question plus courte.";
+    } else if (error.message.includes("quota") || error.message.includes("billing")) {
+      errorMessage = "Service IA temporairement indisponible. Notre équipe technique a été alertée.";
+    }
+
+    res.status(500).json({
+      message: errorMessage,
+      suggestions: suggestions,
+      isError: true,
+      code: error.message.includes("TIMEOUT") ? "TIMEOUT" : "SERVICE_UNAVAILABLE"
+    });
+  }
+}
+
 export async function generateAIContent(req, res) {
   try {
     const user = req.user.db;
@@ -443,16 +452,6 @@ export async function generateAIContent(req, res) {
   }
 }
 
-function getFallbackContent(type, parameters) {
-  const fallbacks = {
-    product_description: `Découvrez notre ${parameters.productName} - ${parameters.features}. Produit de qualité, livraison rapide.`,
-    mission_brief: `Mission: ${parameters.title}. Budget: ${parameters.budget}. Délai: ${parameters.deadline}. Compétences: ${parameters.skills}.`
-  };
-  
-  return fallbacks[type] || "Contenu non disponible pour le moment.";
-}
-
-// Obtenir l'historique des conversations
 export async function getConversations(req, res) {
   try {
     const user = req.user.db;
@@ -481,7 +480,6 @@ export async function getConversations(req, res) {
   }
 }
 
-// NOUVELLE FONCTION: Supprimer une conversation
 export async function deleteConversation(req, res) {
   try {
     const user = req.user.db;
@@ -526,4 +524,11 @@ export async function deleteConversation(req, res) {
     console.error("Delete conversation error:", error);
     res.status(500).json({ error: "Erreur lors de la suppression" });
   }
-              }
+}
+
+export default {
+  handleAIMessage,
+  generateAIContent,
+  getConversations,
+  deleteConversation
+};

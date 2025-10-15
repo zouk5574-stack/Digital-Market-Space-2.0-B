@@ -526,4 +526,4 @@ export async function deleteConversation(req, res) {
     console.error("Delete conversation error:", error);
     res.status(500).json({ error: "Erreur lors de la suppression" });
   }
-      }
+              }

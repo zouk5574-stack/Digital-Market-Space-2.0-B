@@ -1,5 +1,5 @@
 // =========================================================
-// src/server.js (VERSION FINALE BACKEND - CHEMIN CORRIGÉ & FEDAPAY INTÉGRÉ)
+// src/server.js (VERSION FINALE CORRIGÉE - FEDAPAY INTÉGRÉ)
 // =========================================================
 import 'dotenv/config'; 
 import express from 'express';
@@ -11,14 +11,15 @@ import multer from 'multer';
 // 1. IMPORT DES MODULES CRITIQUES (Sécurité & Performance)
 // ------------------------------------
 import { startCleanupFilesCron } from './src/cron/cleanupFilesCron.js'; 
-import { rawBodyMiddleware } from './src/middleware/rawBodyMiddleware.js'; // 🚨 NOUVEL IMPORT CRITIQUE
+import { rawBodyMiddleware } from './src/middleware/rawBodyMiddleware.js';
 import authRoutes from './src/routes/authRoutes.js';
 import fileRoutes from './src/routes/fileRoutes.js';
 import productRoutes from './src/routes/productRoutes.js';
 import freelanceRoutes from './src/routes/freelanceRoutes.js';
 import logRoutes from './src/routes/logRoutes.js';
 import orderRoutes from './src/routes/orderRoutes.js';
-import fedapayRoutes from './src/routes/fedapayRoutes.js'; // 🚨 IMPORT DU ROUTEUR FEDAPAY
+import fedapayRoutes from './src/routes/fedapayRoutes.js';
+import aiRoutes from './src/routes/aiRoutes.js'; // 🆕 IMPORT DES ROUTES IA
 
 // ------------------------------------
 // 2. INITIALISATION DE SUPABASE (Client partagé)
@@ -42,15 +43,12 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
 const app = express();
 const port = process.env.PORT || 3001;
 
-// Middlewares globaux
+// Middleware CORS global
 app.use(cors({ 
     origin: process.env.CORS_ORIGIN || '*', 
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
-
-// 🚨 ATTENTION : express.json() ne doit PAS s'appliquer au Webhook FedaPay.
-// Pour toutes les routes, sauf le Webhook, on parse le JSON normalement.
-// Nous allons donc monter les middlewares de parsing après les routes FedaPay.
 
 // Configuration Multer pour les uploads de fichiers
 export const upload = multer({ 
@@ -59,53 +57,112 @@ export const upload = multer({
 });
 
 // ------------------------------------
-// 4. MONTAGE DES ROUTES API
+// 4. MONTAGE STRATÉGIQUE DES ROUTES
 // ------------------------------------
+
+// Route de santé
 app.get('/', (req, res) => {
-    res.send(`Marketplace API is running on port ${port}`);
+    res.json({ 
+        message: `Marketplace API is running on port ${port}`,
+        status: 'healthy',
+        timestamp: new Date().toISOString()
+    });
 });
 
-// === 🚨 MONTAGE CRITIQUE DU WEBHOOK FEDAPAY ===
-// Le Webhook DOIT être placé AVANT les middlewares globaux express.json()/urlencoded()
-// pour pouvoir utiliser le rawBodyMiddleware et vérifier la signature HMAC.
-// On monte la route spécifique /webhook avec son middleware spécial.
-
-// Nous faisons une dérogation en montant uniquement le webhook ici pour garantir la priorité 
-// du rawBodyMiddleware, puis nous montons le reste de la route fedapay plus tard.
+// === 🚨 ROUTE WEBHOOK FEDAPAY - CRITIQUE ===
+// Doit être montée AVANT express.json() pour recevoir le corps brut
 app.post('/api/fedapay/webhook', rawBodyMiddleware, fedapayRoutes);
 
-// Middlewares globaux de parsing s'appliquant au reste des routes API
-app.use(express.json()); 
-app.use(express.urlencoded({ extended: true })); 
+// === MIDDLEWARES GLOBAUX - APRÈS LE WEBHOOK ===
+app.use(express.json({ limit: '10mb' })); 
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // === MONTAGE DES ROUTES STANDARD ===
 app.use('/api/auth', authRoutes);
-
-// La route /files utilise Multer
-app.use('/api/files', upload.single('file'), fileRoutes); 
-
+app.use('/api/files', upload.single('file'), fileRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/freelance', freelanceRoutes);
 app.use('/api/orders', orderRoutes);
-app.use('/api/logs', logRoutes); 
+app.use('/api/logs', logRoutes);
+app.use('/api/ai', aiRoutes); // 🆕 ROUTES DE L'ASSISTANT IA
 
-// On monte le reste des routes fedapay (init-payment) ici, APRÈS le parsing JSON/URLENCODED
-// Si vous utilisez la structure que j'ai proposée pour fedapayRoutes.js, 
-// l'express.json() ici s'appliquera à la route /init-payment, ce qui est correct.
+// Routes FedaPay supplémentaires (hors webhook)
 app.use('/api/fedapay', fedapayRoutes);
 
+// ------------------------------------
+// 5. GESTION DES ERREURS GLOBALES
+// ------------------------------------
+
+// Middleware de gestion des routes non trouvées
+app.use('*', (req, res) => {
+    res.status(404).json({
+        error: 'Route not found',
+        path: req.originalUrl,
+        method: req.method
+    });
+});
+
+// Middleware global de gestion des erreurs
+app.use((error, req, res, next) => {
+    console.error('Global Error Handler:', error);
+    
+    if (error instanceof multer.MulterError) {
+        if (error.code === 'LIMIT_FILE_SIZE') {
+            return res.status(413).json({
+                error: 'File too large',
+                message: 'File size must be less than 10MB'
+            });
+        }
+    }
+    
+    res.status(500).json({
+        error: 'Internal server error',
+        message: process.env.NODE_ENV === 'production' 
+            ? 'Something went wrong' 
+            : error.message
+    });
+});
 
 // ------------------------------------
-// 5. DÉMARRAGE DU SERVEUR ET DU CRON
+// 6. DÉMARRAGE DU SERVEUR ET SERVICES
 // ------------------------------------
 app.listen(port, () => {
     console.log(`\n==============================================`);
-    console.log(`🚀 Server listening at http://localhost:${port}`);
-
-    // Démarrage du Cron de Nettoyage
-    startCleanupFilesCron(); 
+    console.log(`🚀 Server running on port: ${port}`);
+    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`📊 Supabase connected: ${supabaseUrl ? '✅' : '❌'}`);
     
+    // Démarrage du Cron de Nettoyage
+    try {
+        startCleanupFilesCron();
+        console.log(`🔄 Cleanup cron: ✅ Started`);
+    } catch (error) {
+        console.log(`🔄 Cleanup cron: ❌ Failed - ${error.message}`);
+    }
+    
+    console.log(`📋 Available routes:`);
+    console.log(`   › GET  / (health check)`);
+    console.log(`   › POST /api/fedapay/webhook (webhook)`);
+    console.log(`   › POST /api/auth/*`);
+    console.log(`   › POST /api/files/*`);
+    console.log(`   › GET/POST /api/products/*`);
+    console.log(`   › GET/POST /api/freelance/*`);
+    console.log(`   › GET/POST /api/orders/*`);
+    console.log(`   › GET /api/logs/* (admin)`);
+    console.log(`   › POST/GET /api/ai/* (assistant IA)`);
+    console.log(`   › POST/GET /api/fedapay/* (payments)`);
     console.log(`==============================================\n`);
+});
+
+// Gestion gracieuse de l'arrêt
+process.on('SIGTERM', () => {
+    console.log('SIGTERM received, shutting down gracefully');
+    process.exit(0);
+});
+
+process.on('SIGINT', () => {
+    console.log('SIGINT received, shutting down gracefully');
+    process.exit(0);
 });
 
 export default app;

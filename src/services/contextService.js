@@ -79,7 +79,7 @@ export const contextService = {
     const publicSettings = {
       commission_rate: '10%',
       withdrawal_process: '48h',
-      min_withdrawal: 1000
+      min_withdrawal: 5000
     };
 
     // Paramètres admin SEULEMENT pour les admins
@@ -163,7 +163,7 @@ export const contextService = {
       platformContext: {
         commission_rate: '10%',
         withdrawal_process: '48h',
-        min_withdrawal: 1000
+        min_withdrawal: 5000
       },
       activities: { orderCount: 0, productCount: 0, missionCount: 0 }
     };

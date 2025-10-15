@@ -1,5 +1,5 @@
 // =========================================================
-// src/server.js (VERSION CORRIGÉE - CHEMINS FIXÉS)
+// src/server.js (VERSION COMPLÈTE CORRIGÉE)
 // =========================================================
 import 'dotenv/config'; 
 import express from 'express';
@@ -16,21 +16,31 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // ------------------------------------
-// 2. IMPORT DES MODULES (CHEMINS CORRIGÉS)
+// 2. IMPORT DES MODULES (TOUS LES CHEMINS CORRIGÉS)
 // ------------------------------------
-// ❌ ANCIEN: import ... from './src/...'
-// ✅ NOUVEAU: import ... from './...' (car nous sommes déjà dans src/)
-
 import { startCleanupFilesCron } from './cron/cleanupFilesCron.js'; 
+import { startOrderCron } from './cron/orderCron.js';
+import { startPaymentCron } from './cron/paymentCron.js';
+import { startWithdrawalCron } from './cron/withdrawalCron.js';
+
 import { rawBodyMiddleware } from './middleware/rawBodyMiddleware.js';
-import authRoutes from './routes/authRoutes.js';
+
+// Routes principales
+import authRoutes from './routes/auth.js';
+import adminRoutes from './routes/adminRoutes.js';
+import aiRoutes from './routes/aiRoutes.js';
+import fedapayRoutes from './routes/fedapayRoutes.js';
 import fileRoutes from './routes/fileRoutes.js';
-import productRoutes from './routes/productRoutes.js';
 import freelanceRoutes from './routes/freelanceRoutes.js';
 import logRoutes from './routes/logRoutes.js';
-import orderRoutes from './routes/orderRoutes.js';
-import fedapayRoutes from './routes/fedapayRoutes.js';
-import aiRoutes from './routes/aiRoutes.js'; // Routes IA
+import notificationRoutes from './routes/notificationRoutes.js';
+import orderRoutes from './routes/order.js';
+import paymentRoutes from './routes/paymentRoutes.js';
+import paymentProviderRoutes from './routes/paymentProviderRoutes.js';
+import productRoutes from './routes/product.js';
+import statsRoutes from './routes/statsRoutes.js';
+import walletRoutes from './routes/walletRoutes.js';
+import withdrawalRoutes from './routes/withdrawalRoutes.js';
 
 // ------------------------------------
 // 3. INITIALISATION DE SUPABASE
@@ -88,12 +98,19 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // === ROUTES STANDARD ===
 app.use('/api/auth', authRoutes);
-app.use('/api/files', upload.single('file'), fileRoutes);
-app.use('/api/products', productRoutes);
-app.use('/api/freelance', freelanceRoutes);
-app.use('/api/orders', orderRoutes);
-app.use('/api/logs', logRoutes);
+app.use('/api/admin', adminRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/files', upload.single('file'), fileRoutes);
+app.use('/api/freelance', freelanceRoutes);
+app.use('/api/logs', logRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/orders', orderRoutes);
+app.use('/api/payments', paymentRoutes);
+app.use('/api/payment-providers', paymentProviderRoutes);
+app.use('/api/products', productRoutes);
+app.use('/api/stats', statsRoutes);
+app.use('/api/wallet', walletRoutes);
+app.use('/api/withdrawals', withdrawalRoutes);
 
 // Routes FedaPay supplémentaires
 app.use('/api/fedapay', fedapayRoutes);
@@ -141,18 +158,22 @@ app.listen(port, () => {
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`📊 Supabase connected: ${supabaseUrl ? '✅' : '❌'}`);
     
-    // Démarrage du Cron
+    // Démarrage de tous les crons
     try {
         startCleanupFilesCron();
-        console.log(`🔄 Cleanup cron: ✅ Started`);
+        startOrderCron();
+        startPaymentCron();
+        startWithdrawalCron();
+        console.log(`🔄 All crons: ✅ Started`);
     } catch (error) {
-        console.log(`🔄 Cleanup cron: ❌ Failed - ${error.message}`);
+        console.log(`🔄 Some crons failed: ${error.message}`);
     }
     
     console.log(`📋 Available routes:`);
     console.log(`   › GET  / (health check)`);
     console.log(`   › POST /api/fedapay/webhook`);
     console.log(`   › POST /api/auth/*`);
+    console.log(`   › GET/POST /api/admin/*`);
     console.log(`   › POST /api/files/*`);
     console.log(`   › GET/POST /api/products/*`);
     console.log(`   › GET/POST /api/freelance/*`);
@@ -160,6 +181,12 @@ app.listen(port, () => {
     console.log(`   › GET /api/logs/* (admin)`);
     console.log(`   › POST/GET /api/ai/* (assistant IA)`);
     console.log(`   › POST/GET /api/fedapay/* (payments)`);
+    console.log(`   › GET/POST /api/notifications/*`);
+    console.log(`   › GET/POST /api/payments/*`);
+    console.log(`   › GET/POST /api/payment-providers/*`);
+    console.log(`   › GET /api/stats/*`);
+    console.log(`   › GET/POST /api/wallet/*`);
+    console.log(`   › GET/POST /api/withdrawals/*`);
     console.log(`==============================================\n`);
 });
 

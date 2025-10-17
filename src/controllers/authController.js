@@ -1,5 +1,5 @@
 // =========================================================
-// src/controllers/authController.js (VERSION DÉFINITIVE)
+// src/controllers/authController.js (VERSION DÉFINITIVE AVEC LOGOUT)
 // =========================================================
 
 import bcrypt from "bcryptjs";
@@ -24,7 +24,7 @@ async function getRoleIdByName(name) {
 }
 
 // ========================
-// 🧑‍🏭 1. Register (CRÉATION AVEC RÔLE) - Votre code validé
+// 🧑‍🏭 1. Register (CRÉATION AVEC RÔLE)
 // ========================
 export async function register(req, res) {
     try {
@@ -91,17 +91,14 @@ export async function register(req, res) {
     }
 }
 
-
 // ========================
-// 🔑 2. Login (Connexion générique) - CORRIGÉE
+// 🔑 2. Login (Connexion générique)
 // ========================
 export async function login(req, res) {
   try {
     const { identifier, password } = req.body;
     if (!identifier || !password) return res.status(400).json({ error: "Identifiant et mot de passe requis" });
 
-    // 🚨 CORRECTION CRITIQUE : Connexion uniquement par Nom d'utilisateur ou Téléphone.
-    // L'e-mail est exclu pour la sécurité générale et la simplification de l'Admin.
     const { data: users, error } = await supabase
       .from("users")
       .select("*, roles(name)")
@@ -114,13 +111,10 @@ export async function login(req, res) {
     
     const roleName = user.roles?.name || user.role || 'UNKNOWN';
 
-    // 🚨 SÉCURITÉ ADMIN : Si un Super Admin est trouvé, on refuse la connexion ici
-    // pour le forcer à utiliser la route ultra-sécurisée superAdminLogin.
     if (user.is_super_admin) {
       return res.status(403).json({ error: "Ce compte doit utiliser le formulaire de connexion administrateur dédié." });
     }
     
-    // ... (Vérification du mot de passe, statut actif, génération du token et réponse)
     const match = await bcrypt.compare(password, user.password_hash);
     if (!match) return res.status(401).json({ error: INVALID_CREDENTIALS_MSG });
 
@@ -149,24 +143,22 @@ export async function login(req, res) {
 }
 
 // ========================
-// 👑 3. Super Admin Login (STRICTE 4 CHAMPS) - CORRIGÉE
+// 👑 3. Super Admin Login (STRICTE 4 CHAMPS)
 // ========================
 export async function superAdminLogin(req, res) {
   try {
-    // 🚨 Champs requis pour la connexion Admin (firstname, lastname, phone, password)
     const { firstname, lastname, phone, password } = req.body;
     if (!firstname || !lastname || !phone || !password) {
       return res.status(400).json({ error: "Nom, Prénom, Téléphone et Mot de passe sont requis." });
     }
 
-    // 1. Recherche stricte
     const { data: admins, error } = await supabase
       .from("users")
       .select("*, roles(name)")
       .eq("firstname", firstname)
       .eq("lastname", lastname)
       .eq("phone", phone)
-      .eq("is_super_admin", true) // CRITIQUE
+      .eq("is_super_admin", true)
       .limit(1);
 
     if (error) throw error;
@@ -179,20 +171,17 @@ export async function superAdminLogin(req, res) {
     const admin = admins[0];
     const roleName = admin.roles?.name || admin.role || 'SUPER_ADMIN';
 
-    // 2. Vérification du mot de passe
     const match = await bcrypt.compare(password, admin.password_hash);
     if (!match) {
         console.warn(`[SECURITY] Tentative de connexion Admin échouée (mot de passe incorrect).`);
         return res.status(401).json({ error: INVALID_CREDENTIALS_MSG });
     }
 
-    // 3. Vérification du statut
     if (!admin.is_active) {
         addLog(admin.id, 'ADMIN_LOGIN_FAILED_INACTIVE', { phone, ip: req.ip });
         return res.status(403).json({ error: "Le compte administrateur est inactif." });
     }
     
-    // 4. Succès : Génération du JWT
     const token = jwt.sign(
         { sub: admin.id, role_id: admin.role_id, role: roleName, is_super_admin: true }, 
         JWT_SECRET, 
@@ -210,5 +199,30 @@ export async function superAdminLogin(req, res) {
     console.error("Super Admin login error:", err);
     return res.status(500).json({ error: "Erreur serveur interne." });
   }
-          }
-          
+}
+
+// ========================
+// 🚪 4. Logout (Déconnexion)
+// ========================
+export async function logout(req, res) {
+  try {
+    if (!req.user || !req.user.id) {
+      return res.status(401).json({ error: "Utilisateur non authentifié" });
+    }
+
+    // Log de déconnexion
+    await addLog(req.user.id, 'USER_LOGOUT', { 
+      user_role: req.user.role,
+      is_super_admin: req.user.is_super_admin,
+      ip: req.ip 
+    });
+
+    return res.json({ 
+      success: true, 
+      message: "Déconnexion réussie ✅" 
+    });
+  } catch (err) {
+    console.error("Logout error:", err);
+    return res.status(500).json({ error: "Erreur serveur lors de la déconnexion", details: err.message });
+  }
+             }

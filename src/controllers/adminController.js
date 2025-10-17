@@ -4,7 +4,7 @@ import { supabase } from "../server.js";
 import { addLog } from "./logController.js";
 
 // ========================
-// 🧑‍💻 1. Lister tous les utilisateurs (ADAPTÉ)
+// 🧑‍💻 1. Lister tous les utilisateurs (MIS À JOUR)
 // ========================
 export async function listUsers(req, res) {
   try {
@@ -22,13 +22,14 @@ export async function listUsers(req, res) {
         is_super_admin,
         is_commission_exempt,
         email_confirmed,
+        is_active,
         created_at,
         wallets(balance)
       `)
       .order("created_at", { ascending: false });
 
     if (error) throw error;
-    
+
     // Formater les données
     const formattedUsers = users.map(user => ({
       id: user.id,
@@ -42,11 +43,11 @@ export async function listUsers(req, res) {
       is_super_admin: user.is_super_admin,
       is_commission_exempt: user.is_commission_exempt,
       email_confirmed: user.email_confirmed,
+      is_active: user.is_active, // ✅ Utilise le vrai champ maintenant
       created_at: user.created_at,
-      wallet_balance: user.wallets?.[0]?.balance || 0,
-      is_active: user.email_confirmed // Utilisation temporaire de email_confirmed comme statut actif
+      wallet_balance: user.wallets?.[0]?.balance || 0
     }));
-    
+
     return res.json({ success: true, users: formattedUsers });
   } catch (err) {
     console.error("Admin list users error:", err);
@@ -55,7 +56,7 @@ export async function listUsers(req, res) {
 }
 
 // ========================
-// 🛑 2. Bloquer/Débloquer un utilisateur (ADAPTÉ)
+// 🛑 2. Bloquer/Débloquer un utilisateur (MIS À JOUR)
 // ========================
 export async function toggleUserStatus(req, res) {
   const adminId = req.user.id;
@@ -70,25 +71,24 @@ export async function toggleUserStatus(req, res) {
     if (userId === adminId) {
       return res.status(403).json({ error: "Opération non autorisée. Vous ne pouvez pas modifier votre propre statut." });
     }
-    
-    // Utilisation de email_confirmed comme indicateur d'activité temporaire
-    // NOTE: Vous devriez ajouter un champ is_active dans votre table users
+
+    // ✅ Utilise le vrai champ is_active maintenant
     const { data: updatedUser, error } = await supabase
       .from("users")
       .update({ 
-        email_confirmed: is_active 
+        is_active: is_active 
       })
       .eq("id", userId)
       .select(`
         id, 
         username, 
         email,
-        email_confirmed
+        is_active
       `)
       .single();
 
     if (error) throw error;
-    
+
     // Log l'action
     const actionType = is_active ? "USER_UNBLOCKED" : "USER_BLOCKED";
     await addLog(adminId, actionType, { 
@@ -99,10 +99,7 @@ export async function toggleUserStatus(req, res) {
     const statusMessage = is_active ? "débloqué" : "bloqué";
     return res.json({ 
       message: `Utilisateur ${updatedUser.username} ${statusMessage} ✅`, 
-      user: {
-        ...updatedUser,
-        is_active: updatedUser.email_confirmed
-      }
+      user: updatedUser
     });
   } catch (err) {
     console.error("Admin toggle user status error:", err);
@@ -111,7 +108,7 @@ export async function toggleUserStatus(req, res) {
 }
 
 // ========================
-// 📜 3. Lister les demandes de retrait (ADAPTÉ)
+// 📜 3. Lister les demandes de retrait (MIS À JOUR)
 // ========================
 export async function listWithdrawals(req, res) {
   try {
@@ -131,7 +128,7 @@ export async function listWithdrawals(req, res) {
       .order("created_at", { ascending: true });
 
     if (error) throw error;
-    
+
     return res.json({ success: true, pending_withdrawals: withdrawals });
   } catch (err) {
     console.error("Admin list withdrawals error:", err);
@@ -140,7 +137,7 @@ export async function listWithdrawals(req, res) {
 }
 
 // ========================
-// ✅ 4. Approuver un Retrait (ADAPTÉ)
+// ✅ 4. Approuver un Retrait (MIS À JOUR)
 // ========================
 export async function validateWithdrawal(req, res) {
   const adminId = req.user.id;
@@ -153,20 +150,20 @@ export async function validateWithdrawal(req, res) {
       .select('id, user_id, amount, status')
       .eq('id', withdrawalId)
       .single();
-        
+
     if (fetchError || !withdrawal) {
       return res.status(404).json({ error: "Demande de retrait introuvable." });
     }
-    
+
     if (withdrawal.status !== 'pending') {
       return res.status(400).json({ error: `La demande est déjà ${withdrawal.status}.` });
     }
-    
-    // 2. Mettre à jour le statut (adapté à votre ENUM withdrawal_status)
+
+    // 2. Mettre à jour le statut avec la valeur correcte 'approved'
     const { data: updatedWithdrawal, error } = await supabase
       .from("withdrawals")
       .update({ 
-        status: 'approved', // Adaptez si votre ENUM est différent
+        status: 'approved', // ✅ Bonne valeur selon votre ENUM
         processed_at: new Date().toISOString()
       })
       .eq("id", withdrawalId)
@@ -177,7 +174,7 @@ export async function validateWithdrawal(req, res) {
       .single();
 
     if (error) throw error;
-    
+
     // Log l'action
     await addLog(adminId, 'WITHDRAWAL_APPROVED', { 
       withdrawal_id: updatedWithdrawal.id, 
@@ -187,7 +184,7 @@ export async function validateWithdrawal(req, res) {
 
     const message = "Retrait approuvé ✅ (L'Admin est responsable d'effectuer le transfert externe)";
     return res.json({ message, withdrawal: updatedWithdrawal });
-    
+
   } catch (err) {
     console.error("Admin validate withdrawal error:", err);
     return res.status(500).json({ error: "Erreur serveur lors de l'approbation du retrait.", details: err.message });
@@ -195,7 +192,7 @@ export async function validateWithdrawal(req, res) {
 }
 
 // ========================
-// ❌ 5. Rejeter un Retrait (ADAPTÉ)
+// ❌ 5. Rejeter un Retrait (MIS À JOUR)
 // ========================
 export async function rejectWithdrawal(req, res) {
   const adminId = req.user.id;
@@ -217,7 +214,7 @@ export async function rejectWithdrawal(req, res) {
     if (withdrawal.status !== 'pending') {
       return res.status(400).json({ error: `La demande est déjà ${withdrawal.status}.` });
     }
-    
+
     // 2. Rembourser les fonds via mise à jour directe du wallet
     const { error: refundError } = await supabase
       .from('wallets')
@@ -230,12 +227,12 @@ export async function rejectWithdrawal(req, res) {
       console.error("Refund error:", refundError);
       throw refundError;
     }
-    
-    // 3. Mettre à jour le statut du withdrawal
+
+    // 3. Mettre à jour le statut du withdrawal avec la valeur correcte 'rejected'
     const { data: updatedWithdrawal, error } = await supabase
       .from("withdrawals")
       .update({ 
-        status: 'rejected', // Adaptez si votre ENUM est différent
+        status: 'rejected', // ✅ Bonne valeur selon votre ENUM
         rejection_reason: rejection_reason || "Non spécifié par l'administrateur",
         processed_at: new Date().toISOString()
       })
@@ -247,7 +244,7 @@ export async function rejectWithdrawal(req, res) {
       .single();
 
     if (error) throw error;
-    
+
     // Log l'action
     await addLog(adminId, 'WITHDRAWAL_REJECTED', { 
       withdrawal_id: updatedWithdrawal.id, 
@@ -258,7 +255,7 @@ export async function rejectWithdrawal(req, res) {
 
     const message = "Retrait rejeté et fonds remboursés au portefeuille 🔄";
     return res.json({ message, withdrawal: updatedWithdrawal });
-    
+
   } catch (err) {
     console.error("Admin reject withdrawal error:", err);
     return res.status(500).json({ error: "Erreur serveur lors du rejet du retrait.", details: err.message });
@@ -266,7 +263,7 @@ export async function rejectWithdrawal(req, res) {
 }
 
 // ========================
-// 📊 6. Statistiques Admin (NOUVELLE FONCTIONNALITÉ)
+// 📊 6. Statistiques Admin (MIS À JOUR)
 // ========================
 export async function getDashboardStats(req, res) {
   try {
@@ -291,7 +288,13 @@ export async function getDashboardStats(req, res) {
       .select('amount')
       .eq('status', 'approved');
 
-    if (usersError || productsError || missionsError || transactionsError) {
+    // Compter les retraits en attente
+    const { count: pendingWithdrawalsCount, error: withdrawalsError } = await supabase
+      .from('withdrawals')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', 'pending');
+
+    if (usersError || productsError || missionsError || transactionsError || withdrawalsError) {
       throw new Error('Erreur lors de la récupération des statistiques');
     }
 
@@ -302,12 +305,58 @@ export async function getDashboardStats(req, res) {
       total_products: productsCount || 0,
       total_missions: missionsCount || 0,
       total_revenue: totalRevenue,
-      pending_withdrawals: 0 // Vous pouvez récupérer ceci séparément
+      pending_withdrawals: pendingWithdrawalsCount || 0
     };
 
     return res.json({ success: true, stats });
   } catch (err) {
     console.error("Admin dashboard stats error:", err);
     return res.status(500).json({ error: "Erreur serveur lors de la récupération des statistiques.", details: err.message });
+  }
+}
+
+// ========================
+// 🔧 7. Mettre à jour les paramètres de commission (NOUVELLE FONCTIONNALITÉ)
+// ========================
+export async function updateCommissionSettings(req, res) {
+  const adminId = req.user.id;
+  const { default_commission_rate, exempted_roles } = req.body;
+
+  try {
+    // Mettre à jour les paramètres dans la table settings
+    const { error } = await supabase
+      .from('settings')
+      .upsert({
+        key: 'commission_settings',
+        value: {
+          default_commission_rate: default_commission_rate || 0.1,
+          exempted_roles: exempted_roles || [],
+          updated_by: adminId,
+          updated_at: new Date().toISOString()
+        },
+        updated_at: new Date().toISOString()
+      }, {
+        onConflict: 'key'
+      });
+
+    if (error) throw error;
+
+    // Log l'action
+    await addLog(adminId, 'COMMISSION_SETTINGS_UPDATED', {
+      default_commission_rate,
+      exempted_roles
+    });
+
+    return res.json({ 
+      success: true, 
+      message: "Paramètres de commission mis à jour ✅",
+      settings: {
+        default_commission_rate,
+        exempted_roles
+      }
+    });
+  } catch (err) {
+    console.error("Admin update commission settings error:", err);
+    return res.status(500).json({ error: "Erreur serveur lors de la mise à jour des paramètres.", details: err.message });
   }
 }

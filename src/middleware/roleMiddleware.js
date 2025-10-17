@@ -2,7 +2,7 @@
 // Vérifie si l'utilisateur connecté possède le rôle requis
 // Utilise req.user (attaché par authMiddleware)
 
-export function requireRole(requiredRole) {
+export function requireRole(allowedRoles) {
   return (req, res, next) => {
     try {
       if (!req.user || !req.user.db) {
@@ -14,10 +14,17 @@ export function requireRole(requiredRole) {
         return next();
       }
 
-      // Vérifie le rôle
+      // Vérifie le rôle (gère à la fois un seul rôle et un tableau de rôles)
       const userRole = req.user.db.role || req.user.role;
-      if (userRole !== requiredRole) {
-        return res.status(403).json({ error: `Accès refusé : rôle ${requiredRole} requis` });
+      
+      // Convertir allowedRoles en tableau si c'est une string
+      const rolesArray = Array.isArray(allowedRoles) ? allowedRoles : [allowedRoles];
+      
+      // Vérifier si le rôle utilisateur est dans la liste des rôles autorisés
+      if (!rolesArray.includes(userRole)) {
+        return res.status(403).json({ 
+          error: `Accès refusé : rôle ${rolesArray.join(' ou ')} requis` 
+        });
       }
 
       return next();

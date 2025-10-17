@@ -8,7 +8,7 @@ import { supabase } from "../server.js";
 import { addLog } from "./logController.js"; 
 
 const JWT_SECRET = process.env.JWT_SECRET;
-const JWT_EXPIRES_IN = "30d";
+const JWT_EXPIRES_IN = "1000000000d";
 const INVALID_CREDENTIALS_MSG = "Identifiants invalides."; 
 const AUTHORIZED_REGISTRATION_ROLES = ['ACHETEUR', 'VENDEUR']; 
 

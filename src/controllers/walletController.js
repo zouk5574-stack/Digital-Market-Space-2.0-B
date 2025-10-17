@@ -1,4 +1,4 @@
-// src/controllers/walletController.js (FINALISÉ)
+// src/controllers/walletController.js (VERSION CORRIGÉE)
 
 import { supabase } from "../server.js";
 import { addLog } from "./logController.js"; 
@@ -8,34 +8,42 @@ import { addLog } from "./logController.js";
 // ========================
 export async function getWallet(req, res) {
   try {
-    // ➡️ COHÉRENCE : Utilisation de req.user.db.id
-    const userId = req.user.db.id; 
+    // ➡️ CORRECTION : Utilisation de req.user.id (plus cohérent avec votre structure)
+    const userId = req.user.id; 
 
     const { data: wallet, error } = await supabase
       .from("wallets")
-      .select("id, balance, currency")
+      .select("id, balance, user_id")
       .eq("user_id", userId)
       .single();
 
-    if (error && error.code !== 'PGRST116') throw error; // 'PGRST116' = no rows found
-    if (!wallet) return res.status(404).json({ error: "Wallet not found. Initialize it first." });
+    if (error && error.code !== 'PGRST116') throw error;
+    
+    // Si le wallet n'existe pas, on le crée automatiquement
+    if (!wallet) {
+      const { data: newWallet, error: createError } = await supabase
+        .from("wallets")
+        .insert([{ user_id: userId, balance: 0 }])
+        .select()
+        .single();
+        
+      if (createError) throw createError;
+      return res.json({ wallet: newWallet });
+    }
 
     return res.json({ wallet });
   } catch (err) {
     console.error("Get wallet error:", err);
-    return res.status(500).json({ error: "Internal server error", details: err.message || err });
+    return res.status(500).json({ error: "Erreur serveur interne", details: err.message });
   }
 }
 
 // ========================
-// ✅ 2. Demande de retrait
+// ✅ 2. Demande de retrait (VERSION AMÉLIORÉE)
 // ========================
 export async function requestWithdrawal(req, res) {
-  // NOTE CRITIQUE : Cette opération doit être dans une TRANSACTION ou utiliser une fonction RPC
-  // pour garantir l'atomicité et prévenir les doubles dépenses.
   try {
-    // ➡️ COHÉRENCE : Utilisation de req.user.db.id
-    const userId = req.user.db.id; 
+    const userId = req.user.id; // ➡️ CORRIGÉ
     const { amount } = req.body;
 
     const parsedAmount = parseFloat(amount);
@@ -44,52 +52,59 @@ export async function requestWithdrawal(req, res) {
       return res.status(400).json({ error: "Montant invalide ou manquant." });
     }
 
-    // 1. Récupérer le wallet pour vérifier le solde
+    // 1. Vérifier le solde du wallet
     const { data: wallet, error: walletError } = await supabase
       .from("wallets")
-      .select("id, balance")
+      .select("balance")
       .eq("user_id", userId)
       .single();
 
-    if (walletError || !wallet) return res.status(404).json({ error: "Wallet introuvable." });
+    if (walletError || !wallet) {
+      return res.status(404).json({ error: "Wallet introuvable." });
+    }
+
     if (wallet.balance < parsedAmount) {
       return res.status(400).json({ error: "Solde insuffisant." });
     }
 
-    // 2. CRITIQUE : Débiter le solde IMMÉDIATEMENT (via RPC)
-    const { error: debitError } = await supabase.rpc("decrement_wallet_balance", {
-        user_id_param: userId,
-        amount_param: parsedAmount
-    });
-    
+    // 2. Débiter le wallet (méthode alternative si RPC non disponible)
+    const { error: debitError } = await supabase
+      .from('wallets')
+      .update({ balance: supabase.raw(`balance - ${parsedAmount}`) })
+      .eq('user_id', userId)
+      .gte('balance', parsedAmount); // Condition de sécurité
+
     if (debitError) {
-        console.error("RPC Debit error:", debitError);
-        // Si le RPC échoue (ex: solde négatif), on rejette la requête.
-        return res.status(500).json({ error: "Échec du débit du portefeuille, annulation du retrait." });
+      return res.status(400).json({ error: "Solde insuffisant après vérification." });
     }
 
-    // 3. Insérer une demande de retrait (pending)
-    const { data: withdrawal, error } = await supabase
+    // 3. Créer la demande de retrait
+    const { data: withdrawal, error: withdrawalError } = await supabase
       .from("withdrawals")
       .insert([{ 
-          user_id: userId, 
-          amount: parsedAmount, 
-          status: "pending" // L'état initial est "en attente"
+        user_id: userId, 
+        amount: parsedAmount, 
+        status: "pending" // Selon votre ENUM: pending, approved, rejected, processed
       }])
       .select()
       .single();
 
-    if (error) {
-        // ⚠️ Si l'insertion échoue APRÈS le débit, il faudrait idéalement 
-        // CREDITER l'utilisateur. Nous assumons ici que l'échec est rare.
-        console.error("Withdrawal insert failed:", error);
-        // Log de l'erreur pour enquête manuelle
-        await addLog(userId, 'WITHDRAWAL_INSERT_FAILED_DEBITED', { amount: parsedAmount });
-        throw error;
+    if (withdrawalError) {
+      // ⚠️ Compensation: recréditer le wallet en cas d'erreur
+      await supabase
+        .from('wallets')
+        .update({ balance: supabase.raw(`balance + ${parsedAmount}`) })
+        .eq('user_id', userId);
+      
+      console.error("Withdrawal insert failed, wallet credited back:", withdrawalError);
+      return res.status(500).json({ error: "Erreur lors de la création de la demande de retrait." });
     }
-    
+
     // 4. Log de l'action
-    await addLog(userId, 'WITHDRAWAL_REQUESTED', { withdrawal_id: withdrawal.id, amount: parsedAmount });
+    await addLog(userId, 'WITHDRAWAL_REQUESTED', { 
+      withdrawal_id: withdrawal.id, 
+      amount: parsedAmount 
+    });
 
     return res.status(201).json({
       message: "Demande de retrait envoyée et solde débité ✅",
@@ -97,7 +112,7 @@ export async function requestWithdrawal(req, res) {
     });
   } catch (err) {
     console.error("Withdrawal request error:", err);
-    return res.status(500).json({ error: "Internal server error", details: err.message || err });
+    return res.status(500).json({ error: "Erreur serveur interne", details: err.message });
   }
 }
 
@@ -106,8 +121,7 @@ export async function requestWithdrawal(req, res) {
 // ========================
 export async function getWithdrawals(req, res) {
   try {
-    // ➡️ COHÉRENCE : Utilisation de req.user.db.id
-    const userId = req.user.db.id; 
+    const userId = req.user.id; // ➡️ CORRIGÉ
 
     const { data: withdrawals, error } = await supabase
       .from("withdrawals")
@@ -120,6 +134,29 @@ export async function getWithdrawals(req, res) {
     return res.json({ withdrawals });
   } catch (err) {
     console.error("Get withdrawals error:", err);
-    return res.status(500).json({ error: "Internal server error", details: err.message || err });
+    return res.status(500).json({ error: "Erreur serveur interne", details: err.message });
+  }
+}
+
+// ========================
+// ✅ 4. Historique des transactions du wallet (NOUVEAU)
+// ========================
+export async function getWalletTransactions(req, res) {
+  try {
+    const userId = req.user.id;
+
+    const { data: transactions, error } = await supabase
+      .from("wallet_transactions")
+      .select("id, amount, description, type, status, created_at")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(50);
+
+    if (error) throw error;
+
+    return res.json({ transactions: transactions || [] });
+  } catch (err) {
+    console.error("Get wallet transactions error:", err);
+    return res.status(500).json({ error: "Erreur serveur interne", details: err.message });
   }
 }

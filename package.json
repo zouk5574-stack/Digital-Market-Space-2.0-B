@@ -4,9 +4,9 @@
   "type": "module",
   "main": "src/server.js",
   "scripts": {
-    "build": "npm install",
+    "build": "npm install,npm install axios,npm install fedapay,",
     "dev": "nodemon server.js",
-    "start": "node server.js"
+    "start": "server.js"
   },
   "dependencies": {
     "express": "^4.18.2",

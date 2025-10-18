@@ -2,7 +2,7 @@
 import crypto from "crypto";
 import { supabase } from "../server.js";
 import fedapayService from "../services/fedapayService.js";
-import { addLog } from "../utils/logging.js";
+import { addLog } from "../controllers/logController.js";
 
 // ===============================
 // ⚙️ Variables Globales

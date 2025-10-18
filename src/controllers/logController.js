@@ -27,7 +27,7 @@ export async function addLog(userId, action, details = {}) {
       console.error('Log insertion error:', error);
       console.log(`AI_LOG: ${action}`, { userId, ...details });
     }
-    
+
     return { success: true };
   } catch (error) {
     console.error('Logging failed:', error);
@@ -61,7 +61,7 @@ export async function addSecurityLog(userId, securityEvent, details = {}) {
       console.error('Security log error:', error);
       console.error(`🔴 SECURITY_ALERT: ${securityEvent}`, { userId, details });
     }
-    
+
     return { success: true };
   } catch (error) {
     console.error('Security logging failed:', error);
@@ -97,7 +97,7 @@ export async function getAILogs(limit = 50) {
 export async function getLogs(req, res) {
   try {
     // Le middleware requireRole(["ADMIN", "SUPER_ADMIN"]) garantit l'accès.
-    
+
     const { data, error } = await supabase
       .from(LOG_TABLE)
       // Joindre la table des utilisateurs pour le nom
@@ -105,7 +105,7 @@ export async function getLogs(req, res) {
       .order("created_at", { ascending: false });
 
     if (error) throw error;
-    
+
     // Si la jointure utilise 'admin_id', le retour sera { admin: { username: '...' } }
     return res.json({ success: true, logs: data });
   } catch (err) {

@@ -27,7 +27,7 @@
     "pdfkit": "^0.14.0",
     "axios": "^1.7.2",
     "fedapay": "^1.0.0",
-    "crypto": "link:./src/utils/dummy-crypto.js",
+    "crypto": "src/utils/dummy-crypto.js",
     "sharp": "^0.33.4",
     "mime-types": "^2.1.35"
   },

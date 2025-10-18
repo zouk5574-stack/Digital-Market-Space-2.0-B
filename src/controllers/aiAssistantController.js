@@ -21,7 +21,7 @@ setInterval(() => {
 // VALIDATION D'ACCÈS SÉCURISÉE
 function validateUserAccess(userContext, message) {
   const { userRole } = userContext;
-  
+
   const forbiddenPatterns = {
     VENDEUR: [
       /admin/i, /administrateur/i, /backoffice/i, /tableau de bord admin/i,
@@ -65,7 +65,7 @@ function getSecurityFallbackSuggestions(userRole) {
       "Comment sécuriser mes transactions ?"
     ]
   };
-  
+
   return suggestions[userRole] || suggestions.ACHETEUR;
 }
 
@@ -107,7 +107,7 @@ async function getOrCreateConversation(userId, conversationId = null) {
 
   // Créer une nouvelle conversation
   const initialTitle = `Conversation du ${new Date().toLocaleDateString('fr-FR')}`;
-  
+
   const { data: newConversation, error } = await supabase
     .from("ai_conversations")
     .insert([{
@@ -128,7 +128,7 @@ async function getOrCreateConversation(userId, conversationId = null) {
     lastAccessed: Date.now()
   };
   conversationCache.set(newConversation.id, conversation);
-  
+
   return conversation;
 }
 
@@ -155,7 +155,7 @@ async function saveConversationMessage(conversationId, userId, userMessage, aiRe
   if (conversation) {
     conversation.messages.push(message);
     conversation.lastAccessed = Date.now();
-    
+
     // Mettre à jour la date de modification
     await supabase
       .from("ai_conversations")
@@ -169,7 +169,7 @@ async function saveConversationMessage(conversationId, userId, userMessage, aiRe
 // PROMPT SYSTÈME SÉCURISÉ
 function buildSystemPrompt(userContext) {
   const { userRole, userData, platformContext, activities } = userContext;
-  
+
   const SECURITY_RULES = `
 # RÈGLES DE SÉCURITÉ STRICTES - IMPÉRATIF
 - NE donne JAMAIS d'informations sur l'interface d'administration aux non-admins
@@ -245,7 +245,7 @@ Ton objectif: AIDER dans les limites strictes du rôle utilisateur.
 // Générer des suggestions rapides contextuelles
 function generateQuickSuggestions(userContext, lastResponse) {
   const { userRole, userData } = userContext;
-  
+
   const baseSuggestions = {
     ADMIN: [
       "Génère un rapport des performances du mois",
@@ -284,14 +284,14 @@ function getFallbackContent(type, parameters) {
     product_description: `Découvrez notre ${parameters.productName} - ${parameters.features}. Produit de qualité, livraison rapide.`,
     mission_brief: `Mission: ${parameters.title}. Budget: ${parameters.budget}. Délai: ${parameters.deadline}. Compétences: ${parameters.skills}.`
   };
-  
+
   return fallbacks[type] || "Contenu non disponible pour le moment.";
 }
 
 // FONCTIONS PRINCIPALES EXPORTÉES
 export async function handleAIMessage(req, res) {
   const startTime = Date.now();
-  
+
   try {
     const user = req.user.db;
     const { message, context = {} } = req.body;
@@ -315,7 +315,7 @@ export async function handleAIMessage(req, res) {
 
     // 1. Préparer le contexte utilisateur
     const userContext = await contextService.buildUserContext(user, context);
-    
+
     // 2. VALIDATION DE SÉCURITÉ
     try {
       validateUserAccess(userContext, message);
@@ -334,13 +334,13 @@ export async function handleAIMessage(req, res) {
         code: "ACCESS_RESTRICTED"
       });
     }
-    
+
     // 3. Récupérer l'historique de conversation
     const conversationHistory = await getOrCreateConversation(user.id, context.conversationId);
-    
+
     // 4. Construire le prompt contextuel sécurisé
     const systemPrompt = buildSystemPrompt(userContext);
-    
+
     // 5. Appeler le service OpenAI avec timeout
     const aiResponse = await Promise.race([
       openAIService.sendMessage({
@@ -386,7 +386,7 @@ export async function handleAIMessage(req, res) {
 
   } catch (error) {
     console.error("AI Assistant error:", error);
-    
+
     // Logger l'erreur
     await addLog(req.user.db.id, 'AI_ASSISTANT_ERROR', {
       error: error.message,
@@ -396,7 +396,7 @@ export async function handleAIMessage(req, res) {
     // Messages d'erreur spécifiques
     let errorMessage = "Je rencontre des difficultés techniques. Veuillez réessayer dans quelques instants.";
     let suggestions = ["Réessayer", "Contacter le support"];
-    
+
     if (error.message.includes("TIMEOUT")) {
       errorMessage = "La requête a pris trop de temps. Veuillez réessayer avec une question plus courte.";
     } else if (error.message.includes("quota") || error.message.includes("billing")) {
@@ -418,7 +418,7 @@ export async function generateAIContent(req, res) {
     const { type, parameters } = req.body;
 
     const validTypes = ['product_description', 'mission_brief', 'shop_description', 'proposal_template'];
-    
+
     if (!validTypes.includes(type)) {
       return res.status(400).json({
         error: "Type de contenu non supporté",
@@ -427,7 +427,7 @@ export async function generateAIContent(req, res) {
     }
 
     const content = await openAIService.generateContent(type, parameters, user);
-    
+
     // Logger la génération
     await addLog(user.id, 'AI_CONTENT_GENERATION', {
       contentType: type,
@@ -439,7 +439,7 @@ export async function generateAIContent(req, res) {
 
   } catch (error) {
     console.error("Content generation error:", error);
-    
+
     await addLog(req.user.db.id, 'AI_CONTENT_GENERATION_ERROR', {
       error: error.message,
       type: req.body.type
@@ -456,7 +456,7 @@ export async function getConversations(req, res) {
   try {
     const user = req.user.db;
     const { limit = 20, offset = 0 } = req.query;
-    
+
     const { data: conversations, error, count } = await supabase
       .from("ai_conversations")
       .select("id, title, created_at, updated_at, context", { count: 'exact' })

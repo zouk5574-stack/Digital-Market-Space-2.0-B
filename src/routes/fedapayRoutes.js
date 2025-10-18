@@ -1,37 +1,44 @@
-// src/routes/fedapayRoutes.js
+// =========================================================
+// src/routes/fedapayRoutes.js (VERSION COMPLÈTE OPTIMISÉE)
+// =========================================================
 
 import express from 'express';
-import { 
-    initFedapayPayment, 
-    handleFedapayWebhook,
-    // Importer la fonction pour l'initialisation de l'Escrow
-    initFedapayEscrowPayment 
-} from '../controllers/fedapayController.js'; 
-import { isAuthenticated } from '../middleware/authMiddleware.js'; 
-import { rawBodyMiddleware } from '../middleware/rawBodyMiddleware.js'; 
+import {
+  initFedapayPayment,
+  handleFedapayWebhook,
+  initFedapayEscrowPayment,
+} from '../controllers/fedapayController.js';
+import { isAuthenticated } from '../middleware/authMiddleware.js';
+import { rawBodyMiddleware } from '../middleware/rawBodyMiddleware.js';
 
 const router = express.Router();
 
 /**
+ * ==========================================
+ * 🎯 FedaPay ROUTES - PAYMENTS & WEBHOOKS
+ * ==========================================
+ */
+
+/**
  * @route POST /api/fedapay/init-payment
- * @description Initialise une transaction FedaPay pour une commande de produits (E-commerce).
+ * @description Initialise un paiement FedaPay pour une commande de produits digitaux (E-commerce).
  * @access Private (Acheteur authentifié)
  */
 router.post('/init-payment', isAuthenticated, initFedapayPayment);
 
 /**
  * @route POST /api/fedapay/init-escrow
- * @description Initialise une transaction FedaPay pour le séquestre d'une mission (Freelance).
- * @access Private (Acheteur authentifié)
- * NOTE : Cette route sera appelée par 'freelanceController.acceptFreelanceApplication' qui déléguera la création
- * du lien de paiement.
+ * @description Initialise un paiement FedaPay en mode séquestre (Freelance mission escrow).
+ * @access Private (Client authentifié)
+ * ⚙️ Utilisée uniquement par le contrôleur FreelanceController lorsqu'une mission est acceptée.
  */
-// router.post('/init-escrow', isAuthenticated, initFedapayEscrowPayment); // ⚠️ Supprimé car la logique est gérée DANS le freelanceController.
+router.post('/init-escrow', isAuthenticated, initFedapayEscrowPayment);
 
 /**
  * @route POST /api/fedapay/webhook
- * @description Gère les notifications de Fedapay (paiement réussi, échec, Escrow, etc.).
- * @access Public (Appelé par FedaPay)
+ * @description Reçoit les notifications FedaPay (succès, échec, escrow release, refund, etc.)
+ * @access Public (appelé directement par FedaPay)
+ * ⚠️ Utilise rawBodyMiddleware pour valider la signature FedaPay avant parsing JSON
  */
 router.post('/webhook', rawBodyMiddleware, handleFedapayWebhook);
 

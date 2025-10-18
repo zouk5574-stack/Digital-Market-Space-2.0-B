@@ -29,7 +29,7 @@ async function getRoleIdByName(name) {
 export async function register(req, res) {
     try {
         const { username, firstname, lastname, phone, email, password, role } = req.body;
-        
+
         if (!username || !phone || !password || !role) {
             return res.status(400).json({ error: "Le nom d'utilisateur, le téléphone, le mot de passe et le rôle sont requis" });
         }
@@ -108,13 +108,13 @@ export async function login(req, res) {
     if (error) throw error;
     const user = users?.[0];
     if (!user) return res.status(401).json({ error: INVALID_CREDENTIALS_MSG });
-    
+
     const roleName = user.roles?.name || user.role || 'UNKNOWN';
 
     if (user.is_super_admin) {
       return res.status(403).json({ error: "Ce compte doit utiliser le formulaire de connexion administrateur dédié." });
     }
-    
+
     const match = await bcrypt.compare(password, user.password_hash);
     if (!match) return res.status(401).json({ error: INVALID_CREDENTIALS_MSG });
 
@@ -122,7 +122,7 @@ export async function login(req, res) {
         addLog(user.id, 'LOGIN_FAILED_INACTIVE', { identifier, ip: req.ip });
         return res.status(403).json({ error: "Votre compte est inactif. Veuillez contacter le support." }); 
     }
-    
+
     addLog(user.id, 'USER_LOGIN', { role: roleName, ip: req.ip });
 
     const token = jwt.sign(
@@ -162,7 +162,7 @@ export async function superAdminLogin(req, res) {
       .limit(1);
 
     if (error) throw error;
-    
+
     if (!admins || admins.length === 0) {
         console.warn(`[SECURITY] Tentative de connexion Admin échouée (informations ne correspondent pas).`);
         return res.status(401).json({ error: INVALID_CREDENTIALS_MSG });
@@ -181,7 +181,7 @@ export async function superAdminLogin(req, res) {
         addLog(admin.id, 'ADMIN_LOGIN_FAILED_INACTIVE', { phone, ip: req.ip });
         return res.status(403).json({ error: "Le compte administrateur est inactif." });
     }
-    
+
     const token = jwt.sign(
         { sub: admin.id, role_id: admin.role_id, role: roleName, is_super_admin: true }, 
         JWT_SECRET, 

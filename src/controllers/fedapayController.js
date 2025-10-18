@@ -2,7 +2,7 @@
 import crypto from "crypto";
 import { supabase } from "../server.js";
 import fedapayService from "../services/fedapayService.js";
-import { addLog } from "../controllers/logController.js";
+import { addLog } from "./logController.js"; // CORRIGÉ : chemin relatif au dossier controllers
 
 // ===============================
 // ⚙️ Variables Globales

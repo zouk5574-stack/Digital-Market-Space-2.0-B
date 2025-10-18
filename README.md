@@ -66,7 +66,67 @@ Le serveur src/server.js gère l'initialisation de toutes les routes, les middle
 
  
 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
-
+‎Digital-Market-Space-2.0-B/
+‎├── src/
+‎│   ├── controllers/
+‎│   │   ├── adminController.js
+‎│   │   ├── aiAssistantController.js
+‎│   │   ├── authController.js
+‎│   │   ├── fedapayController.js
+‎│   │   ├── fileController.js
+‎│   │   ├── freelanceController.js
+‎│   │   ├── logController.js
+‎│   │   ├── notificationController.js
+‎│   │   ├── orderController.js
+‎│   │   ├── paymentController.js
+‎│   │   ├── paymentProviderController.js
+‎│   │   ├── productController.js
+‎│   │   ├── statsController.js
+‎│   │   ├── walletController.js
+‎│   │   └── withdrawalController.js
+‎│   │
+‎│   ├── cron/
+‎│   │   ├── cleanupFilesCron.js
+‎│   │   ├── orderCron.js
+‎│   │   ├── paymentCron.js
+‎│   │   └── withdrawalCron.js
+‎│   │
+‎│   ├── middleware/
+‎│   │   ├── aiRateLimit.js
+‎│   │   ├── authMiddleware.js
+‎│   │   ├── rawBodyMiddleware.js
+‎│   │   └── roleMiddleware.js
+‎│   │
+‎│   ├── routes/
+‎│   │   ├── adminRoutes.js
+‎│   │   ├── aiRoutes.js
+‎│   │   ├── auth.js
+‎│   │   ├── fedapayRoutes.js
+‎│   │   ├── fileRoutes.js
+‎│   │   ├── freelanceRoutes.js
+‎│   │   ├── logRoutes.js
+‎│   │   ├── notificationRoutes.js
+‎│   │   ├── order.js
+‎│   │   ├── paymentProviderRoutes.js
+‎│   │   ├── paymentRoutes.js
+‎│   │   ├── product.js
+‎│   │   ├── statsRoutes.js
+‎│   │   ├── walletRoutes.js
+‎│   │   └── withdrawalRoutes.js
+‎│   │
+‎│   ├── services/
+‎│   │   ├── contextService.js
+‎│   │   ├── fedapayService.js
+‎│   │   └── openAIService.js
+‎│   │
+‎│   ├── server.js
+‎│   ├── .env
+‎│   └── package.json
+‎│
+‎└── README.md
+‎
+‎
+‎enregistre en mémoire 
 ‎Digital Market Space 🌌, votre satisfaction est notre priorité 
 
 

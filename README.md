@@ -64,17 +64,67 @@ cd digital-market-space-2.0-backend
 
 Le serveur src/server.js gère l'initialisation de toutes les routes, les middlewares de sécurité globaux, et le démarrage des tâches Cron.
 
-
-📂 Structure du Projet
-digital-market-space-2.0-backend/
-├── src/
-│   ├── controllers/      # Logique métier
-│   ├── cron/             # Tâches planifiées
-│   ├── middleware/       # Sécurité (Auth, Rôles, RawBody)
-│   ├── routes/           # Définition des endpoints API
-│   ├── services/         # Logique externe (Fedapay, OpenAI, Context)
-│   └── server.js         # Point d'entrée
-└── package.json
+STRUCTURE DU BACKEND 
+🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+‎Digital-Market-Space-2.0-B/
+‎├── src/
+‎│   ├── controllers/
+‎│   │   ├── adminController.js
+‎│   │   ├── aiAssistantController.js
+‎│   │   ├── authController.js
+‎│   │   ├── fedapayController.js
+‎│   │   ├── fileController.js
+‎│   │   ├── freelanceController.js
+‎│   │   ├── logController.js
+‎│   │   ├── notificationController.js
+‎│   │   ├── orderController.js
+‎│   │   ├── paymentController.js
+‎│   │   ├── paymentProviderController.js
+‎│   │   ├── productController.js
+‎│   │   ├── statsController.js
+‎│   │   ├── walletController.js
+‎│   │   └── withdrawalController.js
+‎│   │
+‎│   ├── cron/
+‎│   │   ├── cleanupFilesCron.js
+‎│   │   ├── orderCron.js
+‎│   │   ├── paymentCron.js
+‎│   │   └── withdrawalCron.js
+‎│   │
+‎│   ├── middleware/
+‎│   │   ├── aiRateLimit.js
+‎│   │   ├── authMiddleware.js
+‎│   │   ├── rawBodyMiddleware.js
+‎│   │   └── roleMiddleware.js
+‎│   │
+‎│   ├── routes/
+‎│   │   ├── adminRoutes.js
+‎│   │   ├── aiRoutes.js
+‎│   │   ├── auth.js
+‎│   │   ├── fedapayRoutes.js
+‎│   │   ├── fileRoutes.js
+‎│   │   ├── freelanceRoutes.js
+‎│   │   ├── logRoutes.js
+‎│   │   ├── notificationRoutes.js
+‎│   │   ├── order.js
+‎│   │   ├── paymentProviderRoutes.js
+‎│   │   ├── paymentRoutes.js
+‎│   │   ├── product.js
+‎│   │   ├── statsRoutes.js
+‎│   │   ├── walletRoutes.js
+‎│   │   └── withdrawalRoutes.js
+‎│   │
+‎│   ├── services/
+‎│   │   ├── contextService.js
+‎│   │   ├── fedapayService.js
+‎│   │   └── openAIService.js
+‎│   │
+‎│   ├── server.js
+‎│   ├── .env
+‎│   └── package.json
+‎│
+‎└── README.md
+‎
 
 🤝 Licence
 Ce projet est sous licence MIT.

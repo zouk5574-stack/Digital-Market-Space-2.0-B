@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Backend API pour Digital Market Space (Express + Node.js)",
   "type": "module",
-  "main": "src/server.js",
+  "main": "server.js",
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",

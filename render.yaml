@@ -1,10 +1,21 @@
-services:
+version: "1"
 
+services:
+  - type: web
+    name: digital-market-space-backend
+    runtime: node
+    repo: https://github.com/zouk5574-stack/Digital-Market-Space-BACKEND-
+    plan: free
+    region: oregon
+    branch: main
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeploy: true
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
-        sync: false
+        value: 10000
       - key: DATABASE_URL
         sync: false
       - key: SUPABASE_URL
@@ -15,15 +26,3 @@ services:
         sync: false
       - key: FEDAPAY_SECRET_KEY
         sync: false
-# Exported from Render on 2025-09-27T05:30:08Z
-version: "1"
-services:
-- type: web
-  name: Digital.Market.Space.
-  runtime: node
-  repo: https://github.com/zouk5574-stack/Digital-Market-Space-BACKEND-
-  plan: free
-  region: oregon
-  buildCommand: 'npm install'
-  startCommand: 'src/server.js'
-  autoDeployTrigger: 'commit'

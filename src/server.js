@@ -26,7 +26,7 @@ import { startOrderCron } from './cron/orderCron.js';
 import { startPaymentCron } from './cron/paymentCron.js';
 import { startWithdrawalCron } from './cron/withdrawalCron.js';
 
-
+import { rawBodyMiddleware } from './middleware/rawBodyMiddleware.js';
 
 import authRoutes from './routes/auth.js';
 import adminRoutes from './routes/adminRoutes.js';

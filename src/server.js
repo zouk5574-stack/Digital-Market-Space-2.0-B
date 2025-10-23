@@ -43,7 +43,7 @@ import productRoutes from './routes/product.js';
 import statsRoutes from './routes/statsRoutes.js';
 import walletRoutes from './routes/walletRoutes.js';
 import withdrawalRoutes from './routes/withdrawalRoutes.js';
-import platformSettingsRoutes from './admin/platformSettingsRoutes.js';
+import platformSettingsRoutes from './routes/admin/platformSettingsRoutes.js';
 
 // ------------------------------------
 // Initialisation Supabase

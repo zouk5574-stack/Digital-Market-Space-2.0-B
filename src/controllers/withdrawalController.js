@@ -11,9 +11,10 @@ export async function createWithdrawal(req, res) {
   const userId = req.user.db.id; // ⬅️ COHÉRENCE : Utilisation de req.user.db.id
   const { amount, provider_id, account_number } = req.body;
   const parsedAmount = parseFloat(amount);
-  const walletTable = req.user.role === 'ADMIN' ? 'admin_wallets' : 'wallets';
+   const walletTable = req.user.role === 'ADMIN' ? 'admin_wallets' : 'wallets';
 const { data: wallet } = await supabase.from(walletTable).select('balance').eq('user_id', userId).single();
-  if (!parsedAmount || !provider_id || !account_number) {
+  
+if (!parsedAmount || !provider_id || !account_number) {
     return res.status(400).json({ error: "Champs obligatoires (montant, fournisseur, numéro de compte) manquants" });
   }
 

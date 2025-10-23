@@ -43,6 +43,7 @@ import productRoutes from './routes/product.js';
 import statsRoutes from './routes/statsRoutes.js';
 import walletRoutes from './routes/walletRoutes.js';
 import withdrawalRoutes from './routes/withdrawalRoutes.js';
+import platformSettingsRoutes from './admin/platformSettingsRoutes.js';
 
 // ------------------------------------
 // Initialisation Supabase
@@ -155,6 +156,7 @@ app.use('/api/products', productRoutes);
 app.use('/api/stats', statsRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/withdrawals', withdrawalRoutes);
+app.use('/admin/settings', platformSettingsRoutes);
 
 // Routes FedaPay supplémentaires (API / console actions)
 app.use('/api/fedapay', fedapayRoutes);

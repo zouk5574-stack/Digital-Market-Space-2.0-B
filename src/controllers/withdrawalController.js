@@ -1,199 +1,179 @@
 // src/controllers/withdrawalController.js
-import { supabase } from "../server.js";
-import { addLog } from "./logController.js"; 
+import { supabase } from '../config/supabase.js';
+import { withdrawalSchema, validateRequest, validateUUID } from '../middleware/validation.js';
 
-// =====================================
-// 1. Demander un retrait (VENDEUR/ADMIN)
-// =====================================
-export async function createWithdrawal(req, res) {
-  const userId = req.user.db.id;
-  const { amount, provider_id, account_number } = req.body;
-  const parsedAmount = parseFloat(amount);
+// CREATE withdrawal request
+export const createWithdrawal = [
+  validateRequest(withdrawalSchema),
+  async (req, res) => {
+    try {
+      const { user_id, amount, payment_method, status } = req.body;
 
-  if (!parsedAmount || !provider_id || !account_number) {
-    return res.status(400).json({ error: "Champs obligatoires manquants" });
-  }
+      // Verify user exists and has wallet
+      const { data: wallet, error: walletError } = await supabase
+        .from('wallets')
+        .select('balance, id')
+        .eq('user_id', user_id)
+        .single();
 
-  if (parsedAmount <= 0) {
-    return res.status(400).json({ error: "Le montant du retrait doit être supérieur à zéro." });
-  }
+      if (walletError || !wallet) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'User wallet not found' 
+        });
+      }
 
-  const walletTable = req.user.role === "ADMIN" ? "admin_wallets" : "wallets";
+      // Check sufficient balance
+      if (wallet.balance < amount) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Insufficient balance' 
+        });
+      }
 
-  try {
-    const { data: wallet, error: walletError } = await supabase
-      .from(walletTable)
-      .select("balance")
-      .eq("user_id", userId)
-      .single();
+      // Verify user has payout account
+      const { data: payoutAccount, error: accountError } = await supabase
+        .from('user_payout_accounts')
+        .select('id')
+        .eq('user_id', user_id)
+        .eq('is_active', true)
+        .single();
 
-    if (walletError || !wallet) {
-      return res.status(404).json({ error: "Wallet introuvable" });
-    }
+      if (accountError || !payoutAccount) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'No active payout account found' 
+        });
+      }
 
-    if (wallet.balance < parsedAmount) {
-      return res.status(400).json({ error: "Solde insuffisant pour ce retrait" });
-    }
+      const { data, error } = await supabase
+        .from('withdrawals')
+        .insert([{
+          user_id,
+          wallet_id: wallet.id,
+          amount: parseFloat(amount),
+          payment_method,
+          status: status || 'pending',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }])
+        .select(`
+          *,
+          users (*),
+          wallets (*)
+        `);
 
-    // RPC de déduction
-    const { error: decrementError } = await supabase.rpc("decrement_wallet_balance", {
-      user_id_param: userId,
-      amount_param: parsedAmount
-    });
+      if (error) {
+        console.error('Error creating withdrawal:', error);
+        return res.status(500).json({ 
+          success: false, 
+          error: 'Failed to create withdrawal request' 
+        });
+      }
 
-    if (decrementError) {
-      return res.status(400).json({ error: "Erreur lors du blocage du montant. Veuillez réessayer." });
-    }
-
-    const { data: withdrawal, error: insertError } = await supabase
-      .from("withdrawals")
-      .insert([{
-        user_id: userId,
-        amount: parsedAmount,
-        provider_id,
-        account_number,
-        status: "pending"
-      }])
-      .select()
-      .single();
-
-    if (insertError) {
-      await supabase.rpc("increment_wallet_balance", {
-        user_id_param: userId,
-        amount_param: parsedAmount
+      res.status(201).json({
+        success: true,
+        message: 'Withdrawal request created successfully',
+        data: data[0]
       });
-      return res.status(500).json({ error: "Erreur enregistrement demande (montant remboursé)", details: insertError.message });
+
+    } catch (error) {
+      console.error('Server error in createWithdrawal:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Internal server error' 
+      });
     }
-
-    await addLog(userId, 'WITHDRAWAL_REQUEST', { withdrawal_id: withdrawal.id, amount: parsedAmount });
-    return res.status(201).json({ message: "Retrait demandé (montant bloqué) ✅", withdrawal });
-
-  } catch (err) {
-    console.error("Request withdrawal error:", err);
-    return res.status(500).json({ error: "Erreur serveur", details: err.message });
   }
-}
+];
 
-// =====================================
-// 2. Voir mes retraits
-// =====================================
-export async function getMyWithdrawals(req, res) {
-  try {
-    const userId = req.user.db.id;
-    const { data, error } = await supabase
-      .from("withdrawals")
-      .select("*, provider:provider_id(name)")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false });
+// UPDATE withdrawal status
+export const updateWithdrawalStatus = [
+  validateUUID('id'),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status } = req.body;
 
-    if (error) throw error;
-    return res.json({ withdrawals: data });
-  } catch (err) {
-    console.error("Get my withdrawals error:", err);
-    return res.status(500).json({ error: "Erreur serveur", details: err.message });
-  }
-}
+      const validStatuses = ['pending', 'processing', 'completed', 'failed'];
+      if (!validStatuses.includes(status)) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Invalid status' 
+        });
+      }
 
-// =====================================
-// 3. Admin : voir toutes les demandes
-// =====================================
-export async function getAllWithdrawals(req, res) {
-  try {
-    const { data, error } = await supabase
-      .from("withdrawals")
-      .select("*, user:user_id(username, phone), provider:provider_id(name)")
-      .order("created_at", { ascending: false });
+      const { data: withdrawal, error: withdrawalError } = await supabase
+        .from('withdrawals')
+        .select('*')
+        .eq('id', id)
+        .single();
 
-    if (error) throw error;
-    return res.json({ withdrawals: data });
-  } catch (err) {
-    console.error("Get all withdrawals error:", err);
-    return res.status(500).json({ error: "Erreur serveur", details: err.message });
-  }
-}
+      if (withdrawalError || !withdrawal) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Withdrawal not found' 
+        });
+      }
 
-// =====================================
-// 4. Admin : valider un retrait
-// =====================================
-export async function validateWithdrawal(req, res) {
-  const adminId = req.user.db.id;
-  const { id } = req.params;
+      // If completing withdrawal, deduct from wallet
+      if (status === 'completed' && withdrawal.status !== 'completed') {
+        const { error: walletError } = await supabase
+          .from('wallets')
+          .update({
+            balance: supabase.sql`balance - ${withdrawal.amount}`,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', withdrawal.wallet_id);
 
-  try {
-    const { data: withdrawal, error: fetchError } = await supabase
-      .from("withdrawals")
-      .select("id, user_id, amount, status")
-      .eq("id", id)
-      .single();
+        if (walletError) throw walletError;
 
-    if (fetchError || !withdrawal) return res.status(404).json({ error: "Retrait introuvable" });
-    if (withdrawal.status !== "pending") return res.status(400).json({ error: "Retrait déjà traité" });
+        // Create payout transaction
+        await supabase
+          .from('payout_transactions')
+          .insert([{
+            user_id: withdrawal.user_id,
+            withdrawal_id: id,
+            amount: withdrawal.amount,
+            status: 'completed',
+            payment_method: withdrawal.payment_method,
+            created_at: new Date().toISOString()
+          }]);
+      }
 
-    const { data: updated, error } = await supabase
-      .from("withdrawals")
-      .update({ status: "approved", processed_by_admin_id: adminId, processed_at: new Date().toISOString() })
-      .eq("id", id)
-      .select()
-      .single();
+      const { data, error } = await supabase
+        .from('withdrawals')
+        .update({ 
+          status, 
+          updated_at: new Date().toISOString() 
+        })
+        .eq('id', id)
+        .select(`
+          *,
+          users (*),
+          wallets (*)
+        `);
 
-    if (error) throw error;
+      if (error) {
+        console.error('Error updating withdrawal:', error);
+        return res.status(500).json({ 
+          success: false, 
+          error: 'Failed to update withdrawal' 
+        });
+      }
 
-    await addLog(adminId, 'WITHDRAWAL_APPROVED', { withdrawal_id: id, user_id: withdrawal.user_id, amount: withdrawal.amount });
-    return res.json({ message: "Retrait approuvé (transaction en cours) ✅", withdrawal: updated });
-  } catch (err) {
-    console.error("Approve withdrawal error:", err);
-    return res.status(500).json({ error: "Erreur serveur", details: err.message });
-  }
-}
+      res.json({
+        success: true,
+        message: 'Withdrawal status updated successfully',
+        data: data[0]
+      });
 
-// =====================================
-// 5. Admin : rejeter un retrait
-// =====================================
-export async function rejectWithdrawal(req, res) {
-  const adminId = req.user.db.id;
-  const { id } = req.params;
-  const { reason } = req.body;
-
-  if (!reason || reason.length < 5) return res.status(400).json({ error: "Raison de rejet d'au moins 5 caractères requise." });
-
-  try {
-    const { data: withdrawal, error: fetchError } = await supabase
-      .from("withdrawals")
-      .select("id, user_id, amount, status")
-      .eq("id", id)
-      .single();
-
-    if (fetchError || !withdrawal) return res.status(404).json({ error: "Retrait introuvable" });
-    if (withdrawal.status !== "pending") return res.status(400).json({ error: "Retrait déjà traité" });
-
-    const { error: refundError } = await supabase.rpc("increment_wallet_balance", {
-      user_id_param: withdrawal.user_id,
-      amount_param: withdrawal.amount
-    });
-
-    if (refundError) {
-      await addLog(adminId, 'CRITICAL_WITHDRAWAL_REFUND_FAILED', { withdrawal_id: id, user_id: withdrawal.user_id });
-      throw new Error("Échec du remboursement du solde bloqué.");
+    } catch (error) {
+      console.error('Server error in updateWithdrawalStatus:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Internal server error' 
+      });
     }
-
-    const { data: updated, error } = await supabase
-      .from("withdrawals")
-      .update({ 
-        status: "rejected",
-        rejection_reason: reason,
-        processed_by_admin_id: adminId,
-        processed_at: new Date().toISOString()
-      })
-      .eq("id", id)
-      .select()
-      .single();
-
-    if (error) throw error;
-
-    await addLog(adminId, 'WITHDRAWAL_REJECTED', { withdrawal_id: id, user_id: withdrawal.user_id, amount: withdrawal.amount, reason });
-    return res.json({ message: "Retrait rejeté (montant remboursé) ❌", withdrawal: updated });
-  } catch (err) {
-    console.error("Reject withdrawal error:", err);
-    return res.status(500).json({ error: "Erreur serveur", details: err.message });
   }
-}
+];

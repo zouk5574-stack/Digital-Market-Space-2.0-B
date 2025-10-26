@@ -1,69 +1,265 @@
-// src/controllers/paymentProviderController.js (FINALISÉ)
+// src/controllers/paymentController.js
+import { supabase } from '../config/supabase.js';
+import { validateUUID } from '../middleware/validation.js';
 
-import { supabase } from "../server.js";
-import { addLog } from "./logController.js"; 
-
-// ✅ Admin : définir ou mettre à jour les clés Fedapay
-export async function setFedapayKeys(req, res) {
+// GET all payments with pagination
+export const getPayments = async (req, res) => {
   try {
-    // ⚠️ CRITIQUE : Vérification de l'Admin Unique (Super Admin)
-    if (!req.user.db.is_super_admin) {
-      return res.status(403).json({ error: "Accès interdit 🚫. Seul l'Administrateur peut modifier les clés." });
+    const { 
+      page = 1, 
+      limit = 20, 
+      user_id, 
+      status,
+      payment_method,
+      start_date,
+      end_date,
+      sort_by = 'created_at',
+      sort_order = 'desc'
+    } = req.query;
+
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const offset = (pageNum - 1) * limitNum;
+
+    let query = supabase
+      .from('payment_sessions')
+      .select(`
+        *,
+        users (*),
+        orders (*, order_items (*, products (*)))
+      `, { count: 'exact' });
+
+    // Apply filters
+    if (user_id) query = query.eq('user_id', user_id);
+    if (status) query = query.eq('status', status);
+    if (payment_method) query = query.eq('payment_method', payment_method);
+    if (start_date) query = query.gte('created_at', start_date);
+    if (end_date) query = query.lte('created_at', end_date);
+
+    // Sorting
+    query = query.order(sort_by, { ascending: sort_order === 'asc' });
+
+    const { data, error, count } = await query.range(offset, offset + limitNum - 1);
+
+    if (error) {
+      console.error('Error fetching payments:', error);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to fetch payments' 
+      });
     }
 
-    const { public_key, secret_key } = req.body;
+    res.json({
+      success: true,
+      data: data || [],
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: count || 0,
+        totalPages: Math.ceil((count || 0) / limitNum)
+      }
+    });
 
-    if (!public_key || !secret_key) {
-      return res.status(400).json({ error: "Clés Fedapay manquantes" });
-    }
-    
-    // 1. Mise à jour ou insertion
-    const { error } = await supabase
-      .from("payment_providers")
-      .upsert([
-        {
-          // ➡️ COHÉRENCE : Utilisation de 'name' comme clé primaire
-          name: "fedapay",
-          public_key,
-          secret_key,
-          is_active: true, // On présuppose que si les clés sont fournies, le provider est actif
-          updated_at: new Date().toISOString(),
-        },
-      ], { onConflict: "name" }); // ⬅️ OnConflict sur 'name'
-
-    if (error) throw error;
-    
-    // 2. Log de l'action sensible
-    await addLog(req.user.db.id, 'PAYMENT_KEYS_UPDATED', { provider: 'fedapay', public_key_preview: public_key.substring(0, 10) + '...' });
-
-
-    return res.json({ message: "Clés Fedapay mises à jour ✅" });
-  } catch (err) {
-    console.error("Set Fedapay keys error:", err);
-    return res.status(500).json({ error: "Erreur serveur", details: err.message });
+  } catch (error) {
+    console.error('Server error in getPayments:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Internal server error' 
+    });
   }
-}
+};
 
-// ✅ Admin : récupérer les clés (sécurité → seulement admin)
-export async function getFedapayKeys(req, res) {
+// CREATE payment session
+export const createPaymentSession = async (req, res) => {
   try {
-    // ⚠️ CRITIQUE : Vérification de l'Admin Unique (Super Admin)
-    if (!req.user.db.is_super_admin) {
-      return res.status(403).json({ error: "Accès interdit 🚫" });
+    const { 
+      user_id, 
+      order_id, 
+      amount, 
+      currency, 
+      payment_method,
+      provider_id 
+    } = req.body;
+
+    // Verify user exists
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('id', user_id)
+      .single();
+
+    if (userError || !user) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid user' 
+      });
+    }
+
+    // Verify order exists
+    const { data: order, error: orderError } = await supabase
+      .from('orders')
+      .select('id, total_amount, status')
+      .eq('id', order_id)
+      .single();
+
+    if (orderError || !order) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid order' 
+      });
+    }
+
+    // Verify payment provider exists
+    const { data: provider, error: providerError } = await supabase
+      .from('payment_providers')
+      .select('id, name, is_active')
+      .eq('id', provider_id)
+      .single();
+
+    if (providerError || !provider || !provider.is_active) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid payment provider' 
+      });
     }
 
     const { data, error } = await supabase
-      .from("payment_providers")
-      .select("public_key, secret_key, is_active")
-      // ➡️ COHÉRENCE : Utilisation de 'name'
-      .eq("name", "fedapay") 
-      .single();
+      .from('payment_sessions')
+      .insert([{
+        user_id,
+        order_id,
+        amount: parseFloat(amount),
+        currency: currency || 'XOF',
+        payment_method: payment_method || 'card',
+        provider_id,
+        status: 'pending',
+        payment_url: '', // Will be generated by payment provider
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }])
+      .select(`
+        *,
+        users (*),
+        orders (*),
+        payment_providers (*)
+      `);
 
-    if (error) throw error;
+    if (error) {
+      console.error('Error creating payment session:', error);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to create payment session' 
+      });
+    }
 
-    return res.json({ fedapay: data });
-  } catch (err) {
-    console.error("Get Fedapay keys error:", err);
-    return res.status(500).json({ error: "Erreur serveur", details: err.message });
+    res.status(201).json({
+      success: true,
+      message: 'Payment session created successfully',
+      data: data[0]
+    });
+
+  } catch (error) {
+    console.error('Server error in createPaymentSession:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Internal server error' 
+    });
   }
-}
+};
+
+// UPDATE payment status
+export const updatePaymentStatus = [
+  validateUUID('id'),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status, transaction_id, payment_url } = req.body;
+
+      const validStatuses = ['pending', 'processing', 'completed', 'failed', 'cancelled'];
+      if (!validStatuses.includes(status)) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Invalid status' 
+        });
+      }
+
+      const { data: payment, error: paymentError } = await supabase
+        .from('payment_sessions')
+        .select('*')
+        .eq('id', id)
+        .single();
+
+      if (paymentError || !payment) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Payment session not found' 
+        });
+      }
+
+      const updateData = {
+        status,
+        updated_at: new Date().toISOString()
+      };
+
+      if (transaction_id) updateData.transaction_id = transaction_id;
+      if (payment_url) updateData.payment_url = payment_url;
+
+      // If payment completed, update order status and create transaction
+      if (status === 'completed' && payment.status !== 'completed') {
+        // Update order status
+        await supabase
+          .from('orders')
+          .update({ 
+            status: 'confirmed',
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', payment.order_id);
+
+        // Create transaction record
+        await supabase
+          .from('transactions')
+          .insert([{
+            user_id: payment.user_id,
+            order_id: payment.order_id,
+            amount: payment.amount,
+            type: 'payment',
+            status: 'completed',
+            payment_method: payment.payment_method,
+            description: `Payment for order ${payment.order_id}`,
+            created_at: new Date().toISOString()
+          }]);
+      }
+
+      const { data, error } = await supabase
+        .from('payment_sessions')
+        .update(updateData)
+        .eq('id', id)
+        .select(`
+          *,
+          users (*),
+          orders (*)
+        `);
+
+      if (error) {
+        console.error('Error updating payment:', error);
+        return res.status(500).json({ 
+          success: false, 
+          error: 'Failed to update payment' 
+        });
+      }
+
+      res.json({
+        success: true,
+        message: 'Payment status updated successfully',
+        data: data[0]
+      });
+
+    } catch (error) {
+      console.error('Server error in updatePaymentStatus:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Internal server error' 
+      });
+    }
+  }
+];

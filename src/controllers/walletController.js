@@ -1,162 +1,287 @@
-// src/controllers/walletController.js (VERSION CORRIGÉE)
+// src/controllers/walletController.js
+import { supabase } from '../config/supabase.js';
+import { walletSchema, validateRequest, validateUUID } from '../middleware/validation.js';
 
-import { supabase } from "../server.js";
-import { addLog } from "./logController.js"; 
-
-// ========================
-// ✅ 1. Récupérer le solde du wallet d'un utilisateur
-// ========================
-export async function getWallet(req, res) {
+// GET wallet by user ID
+export const getWalletByUserId = async (req, res) => {
   try {
-    // ➡️ CORRECTION : Utilisation de req.user.id (plus cohérent avec votre structure)
-    const userId = req.user.id; 
+    const { user_id } = req.params;
 
-    const { data: wallet, error } = await supabase
-      .from("wallets")
-      .select("id, balance, user_id")
-      .eq("user_id", userId)
-      .single();
-
-    if (error && error.code !== 'PGRST116') throw error;
-    
-    // Si le wallet n'existe pas, on le crée automatiquement
-    if (!wallet) {
-      const { data: newWallet, error: createError } = await supabase
-        .from("wallets")
-        .insert([{ user_id: userId, balance: 0 }])
-        .select()
-        .single();
-        
-      if (createError) throw createError;
-      return res.json({ wallet: newWallet });
-    }
-
-    return res.json({ wallet });
-  } catch (err) {
-    console.error("Get wallet error:", err);
-    return res.status(500).json({ error: "Erreur serveur interne", details: err.message });
-  }
-}
-
-// ========================
-// ✅ 2. Demande de retrait (VERSION AMÉLIORÉE)
-// ========================
-export async function requestWithdrawal(req, res) {
-  try {
-    const userId = req.user.id; // ➡️ CORRIGÉ
-    const { amount } = req.body;
-
-    const parsedAmount = parseFloat(amount);
-
-    if (!parsedAmount || parsedAmount <= 0) {
-      return res.status(400).json({ error: "Montant invalide ou manquant." });
-    }
-
-    // 1. Vérifier le solde du wallet
-    const { data: wallet, error: walletError } = await supabase
-      .from("wallets")
-      .select("balance")
-      .eq("user_id", userId)
-      .single();
-
-    if (walletError || !wallet) {
-      return res.status(404).json({ error: "Wallet introuvable." });
-    }
-
-    if (wallet.balance < parsedAmount) {
-      return res.status(400).json({ error: "Solde insuffisant." });
-    }
-
-    // 2. Débiter le wallet (méthode alternative si RPC non disponible)
-    const { error: debitError } = await supabase
+    const { data, error } = await supabase
       .from('wallets')
-      .update({ balance: supabase.raw(`balance - ${parsedAmount}`) })
-      .eq('user_id', userId)
-      .gte('balance', parsedAmount); // Condition de sécurité
-
-    if (debitError) {
-      return res.status(400).json({ error: "Solde insuffisant après vérification." });
-    }
-
-    // 3. Créer la demande de retrait
-    const { data: withdrawal, error: withdrawalError } = await supabase
-      .from("withdrawals")
-      .insert([{ 
-        user_id: userId, 
-        amount: parsedAmount, 
-        status: "pending" // Selon votre ENUM: pending, approved, rejected, processed
-      }])
-      .select()
+      .select(`
+        *,
+        users (*),
+        transactions!transactions_wallet_id_fkey (*),
+        withdrawals (*)
+      `)
+      .eq('user_id', user_id)
       .single();
 
-    if (withdrawalError) {
-      // ⚠️ Compensation: recréditer le wallet en cas d'erreur
-      await supabase
-        .from('wallets')
-        .update({ balance: supabase.raw(`balance + ${parsedAmount}`) })
-        .eq('user_id', userId);
-      
-      console.error("Withdrawal insert failed, wallet credited back:", withdrawalError);
-      return res.status(500).json({ error: "Erreur lors de la création de la demande de retrait." });
+    if (error) {
+      if (error.code === 'PGRST116') {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Wallet not found' 
+        });
+      }
+      console.error('Error fetching wallet:', error);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to fetch wallet' 
+      });
     }
 
-    // 4. Log de l'action
-    await addLog(userId, 'WITHDRAWAL_REQUESTED', { 
-      withdrawal_id: withdrawal.id, 
-      amount: parsedAmount 
+    if (!data) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Wallet not found' 
+      });
+    }
+
+    res.json({
+      success: true,
+      data
     });
 
-    return res.status(201).json({
-      message: "Demande de retrait envoyée et solde débité ✅",
-      withdrawal
+  } catch (error) {
+    console.error('Server error in getWalletByUserId:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Internal server error' 
     });
-  } catch (err) {
-    console.error("Withdrawal request error:", err);
-    return res.status(500).json({ error: "Erreur serveur interne", details: err.message });
   }
-}
+};
 
-// ========================
-// ✅ 3. Liste des retraits d'un utilisateur
-// ========================
-export async function getWithdrawals(req, res) {
+// CREATE wallet for user
+export const createWallet = [
+  validateRequest(walletSchema),
+  async (req, res) => {
+    try {
+      const { user_id, balance, currency } = req.body;
+
+      // Verify user exists
+      const { data: user, error: userError } = await supabase
+        .from('users')
+        .select('id')
+        .eq('id', user_id)
+        .single();
+
+      if (userError || !user) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Invalid user' 
+        });
+      }
+
+      // Check if wallet already exists for user
+      const { data: existingWallet, error: checkError } = await supabase
+        .from('wallets')
+        .select('id')
+        .eq('user_id', user_id)
+        .single();
+
+      if (existingWallet) {
+        return res.status(409).json({ 
+          success: false, 
+          error: 'Wallet already exists for this user' 
+        });
+      }
+
+      const { data, error } = await supabase
+        .from('wallets')
+        .insert([{
+          user_id,
+          balance: parseFloat(balance) || 0,
+          currency: currency || 'XOF',
+          is_active: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }])
+        .select(`
+          *,
+          users (*)
+        `);
+
+      if (error) {
+        console.error('Error creating wallet:', error);
+        return res.status(500).json({ 
+          success: false, 
+          error: 'Failed to create wallet' 
+        });
+      }
+
+      res.status(201).json({
+        success: true,
+        message: 'Wallet created successfully',
+        data: data[0]
+      });
+
+    } catch (error) {
+      console.error('Server error in createWallet:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Internal server error' 
+      });
+    }
+  }
+];
+
+// UPDATE wallet balance
+export const updateWalletBalance = [
+  validateUUID('id'),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { amount, operation } = req.body; // operation: 'add' or 'subtract'
+
+      if (!amount || amount <= 0) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Valid amount is required' 
+        });
+      }
+
+      if (!['add', 'subtract'].includes(operation)) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Operation must be "add" or "subtract"' 
+        });
+      }
+
+      // Get current wallet
+      const { data: wallet, error: walletError } = await supabase
+        .from('wallets')
+        .select('balance, user_id')
+        .eq('id', id)
+        .single();
+
+      if (walletError || !wallet) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Wallet not found' 
+        });
+      }
+
+      let newBalance;
+      if (operation === 'add') {
+        newBalance = wallet.balance + parseFloat(amount);
+      } else {
+        newBalance = wallet.balance - parseFloat(amount);
+        if (newBalance < 0) {
+          return res.status(400).json({ 
+            success: false, 
+            error: 'Insufficient balance' 
+          });
+        }
+      }
+
+      const { data, error } = await supabase
+        .from('wallets')
+        .update({
+          balance: newBalance,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', id)
+        .select(`
+          *,
+          users (*)
+        `);
+
+      if (error) {
+        console.error('Error updating wallet:', error);
+        return res.status(500).json({ 
+          success: false, 
+          error: 'Failed to update wallet' 
+        });
+      }
+
+      // Create transaction record
+      await supabase
+        .from('transactions')
+        .insert([{
+          user_id: wallet.user_id,
+          wallet_id: id,
+          amount: parseFloat(amount),
+          type: operation === 'add' ? 'credit' : 'debit',
+          status: 'completed',
+          description: `Wallet ${operation === 'add' ? 'credit' : 'debit'}`,
+          created_at: new Date().toISOString()
+        }]);
+
+      res.json({
+        success: true,
+        message: `Wallet ${operation === 'add' ? 'credited' : 'debited'} successfully`,
+        data: data[0]
+      });
+
+    } catch (error) {
+      console.error('Server error in updateWalletBalance:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Internal server error' 
+      });
+    }
+  }
+];
+
+// GET wallet transactions
+export const getWalletTransactions = async (req, res) => {
   try {
-    const userId = req.user.id; // ➡️ CORRIGÉ
+    const { wallet_id } = req.params;
+    const { 
+      page = 1, 
+      limit = 20,
+      type,
+      start_date,
+      end_date,
+      sort_by = 'created_at',
+      sort_order = 'desc'
+    } = req.query;
 
-    const { data: withdrawals, error } = await supabase
-      .from("withdrawals")
-      .select("*")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false });
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const offset = (pageNum - 1) * limitNum;
 
-    if (error) throw error;
+    let query = supabase
+      .from('transactions')
+      .select('*', { count: 'exact' })
+      .eq('wallet_id', wallet_id);
 
-    return res.json({ withdrawals });
-  } catch (err) {
-    console.error("Get withdrawals error:", err);
-    return res.status(500).json({ error: "Erreur serveur interne", details: err.message });
+    // Apply filters
+    if (type) query = query.eq('type', type);
+    if (start_date) query = query.gte('created_at', start_date);
+    if (end_date) query = query.lte('created_at', end_date);
+
+    // Sorting
+    query = query.order(sort_by, { ascending: sort_order === 'asc' });
+
+    const { data, error, count } = await query.range(offset, offset + limitNum - 1);
+
+    if (error) {
+      console.error('Error fetching transactions:', error);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to fetch transactions' 
+      });
+    }
+
+    res.json({
+      success: true,
+      data: data || [],
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: count || 0,
+        totalPages: Math.ceil((count || 0) / limitNum)
+      }
+    });
+
+  } catch (error) {
+    console.error('Server error in getWalletTransactions:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Internal server error' 
+    });
   }
-}
-
-// ========================
-// ✅ 4. Historique des transactions du wallet (NOUVEAU)
-// ========================
-export async function getWalletTransactions(req, res) {
-  try {
-    const userId = req.user.id;
-
-    const { data: transactions, error } = await supabase
-      .from("wallet_transactions")
-      .select("id, amount, description, type, status, created_at")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false })
-      .limit(50);
-
-    if (error) throw error;
-
-    return res.json({ transactions: transactions || [] });
-  } catch (err) {
-    console.error("Get wallet transactions error:", err);
-    return res.status(500).json({ error: "Erreur serveur interne", details: err.message });
-  }
-}
+};

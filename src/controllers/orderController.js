@@ -1,106 +1,101 @@
 // src/controllers/orderController.js
-const express = require('express');
-const router = express.Router();
-const supabase = require('../config/supabaseClient');
-const { orderSchema, validateRequest } = require('../middleware/validation');
+import { orderSchema, validateRequest } from '../middleware/validation.js';
 
-// GET all orders with pagination
-router.get('/', async (req, res) => {
-  try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const offset = (page - 1) * limit;
-    const { user_id, status } = req.query;
+// Ajouter la validation
+router.post('/', validateRequest(orderSchema), createOrder);
 
-    let query = supabase
-      .from('orders')
-      .select('*, order_items(*, products(*)), users(*)', { count: 'exact' });
-
-    if (user_id) query = query.eq('user_id', user_id);
-    if (status) query = query.eq('status', status);
-
-    const { data, error, count } = await query
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
-
-    if (error) throw error;
-
-    res.json({
-      success: true,
-      data,
-      pagination: {
-        page,
-        limit,
-        total: count,
-        totalPages: Math.ceil(count / limit)
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// GET order by ID
-router.get('/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const { data, error } = await supabase
-      .from('orders')
-      .select('*, order_items(*, products(*, categories(*))), users(*), transactions(*)')
-      .eq('id', id)
-      .single();
-
-    if (error) throw error;
-    if (!data) return res.status(404).json({ success: false, error: 'Order not found' });
-
-    res.json({ success: true, data });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// CREATE new order
-router.post('/', validateRequest(orderSchema), async (req, res) => {
+// Améliorer createOrder existante
+export const createOrder = async (req, res) => {
   try {
     const { user_id, total_amount, status, shipping_address, items } = req.body;
 
-    // Créer la commande
+    // Vérifier que l'utilisateur existe
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('id', user_id)
+      .single();
+
+    if (userError || !user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Vérifier les items
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Order must contain at least one item' });
+    }
+
+    // Vérifier la disponibilité des produits
+    for (const item of items) {
+      const { data: product, error: productError } = await supabase
+        .from('products')
+        .select('id, name, stock_quantity, price')
+        .eq('id', item.product_id)
+        .single();
+
+      if (productError || !product) {
+        return res.status(404).json({ error: `Product not found: ${item.product_id}` });
+      }
+
+      if (product.stock_quantity < item.quantity) {
+        return res.status(400).json({ 
+          error: `Insufficient stock for product: ${product.name}` 
+        });
+      }
+    }
+
+    // Créer la commande (votre logique existante améliorée)
     const { data: order, error: orderError } = await supabase
       .from('orders')
       .insert([{
         user_id,
-        total_amount,
-        status,
-        shipping_address,
-        created_at: new Date()
+        total_amount: parseFloat(total_amount),
+        status: status || 'pending',
+        shipping_address: typeof shipping_address === 'string' 
+          ? shipping_address 
+          : JSON.stringify(shipping_address),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
       }])
       .select()
       .single();
 
     if (orderError) throw orderError;
 
-    // Ajouter les items de commande
-    if (items && items.length > 0) {
-      const orderItems = items.map(item => ({
-        order_id: order.id,
-        product_id: item.product_id,
-        quantity: item.quantity,
-        unit_price: item.unit_price,
-        total_price: item.quantity * item.unit_price
-      }));
+    // Créer les order_items et mettre à jour le stock
+    const orderItems = items.map(item => ({
+      order_id: order.id,
+      product_id: item.product_id,
+      quantity: item.quantity,
+      unit_price: item.unit_price,
+      total_price: item.quantity * item.unit_price
+    }));
 
-      const { error: itemsError } = await supabase
-        .from('order_items')
-        .insert(orderItems);
+    const { error: itemsError } = await supabase
+      .from('order_items')
+      .insert(orderItems);
 
-      if (itemsError) throw itemsError;
+    if (itemsError) throw itemsError;
+
+    // Mettre à jour le stock des produits
+    for (const item of items) {
+      await supabase
+        .from('products')
+        .update({ 
+          stock_quantity: supabase.sql`stock_quantity - ${item.quantity}`,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', item.product_id);
     }
 
     // Récupérer la commande complète
     const { data: completeOrder, error: fetchError } = await supabase
       .from('orders')
-      .select('*, order_items(*, products(*))')
+      .select(`
+        *,
+        order_items (*, products (*, categories (*))),
+        users (*)
+      `)
       .eq('id', order.id)
       .single();
 
@@ -108,43 +103,12 @@ router.post('/', validateRequest(orderSchema), async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: 'Order created successfully',
-      data: completeOrder
+      data: completeOrder,
+      message: 'Order created successfully'
     });
+
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    console.error('Order creation error:', error);
+    res.status(500).json({ error: 'Failed to create order' });
   }
-});
-
-// UPDATE order status
-router.patch('/:id/status', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status } = req.body;
-
-    if (!status) {
-      return res.status(400).json({ success: false, error: 'Status is required' });
-    }
-
-    const { data, error } = await supabase
-      .from('orders')
-      .update({ status, updated_at: new Date() })
-      .eq('id', id)
-      .select();
-
-    if (error) throw error;
-    if (!data || data.length === 0) {
-      return res.status(404).json({ success: false, error: 'Order not found' });
-    }
-
-    res.json({
-      success: true,
-      message: 'Order status updated successfully',
-      data: data[0]
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-module.exports = router;
+};

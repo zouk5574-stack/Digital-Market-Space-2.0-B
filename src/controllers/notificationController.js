@@ -1,284 +1,229 @@
-// src/controllers/notificationController.js (VERSION COMPLÉTÉE)
+// src/controllers/notificationController.js
+import { supabase } from '../config/supabase.js';
+import { validateUUID } from '../middleware/validation.js';
 
-import { supabase } from "../server.js";
-import { addLog } from "./logController.js"; 
-
-// =====================================
-// 🆕 FONCTIONS ADMIN
-// =====================================
-
-// 🆕 1. Envoyer une notification en masse
-export async function sendBulkNotification(req, res) {
+// GET user notifications
+export const getUserNotifications = async (req, res) => {
   try {
-    const adminId = req.user.sub;
-    const { title, message, type, target, is_urgent } = req.body;
+    const { user_id } = req.params;
+    const { 
+      page = 1, 
+      limit = 20, 
+      is_read,
+      type,
+      sort_by = 'created_at',
+      sort_order = 'desc'
+    } = req.query;
 
-    // Validation
-    if (!title || !message) {
-      return res.status(400).json({ error: "Titre et message requis" });
-    }
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const offset = (pageNum - 1) * limitNum;
 
-    // Déterminer les utilisateurs cibles
-    let userQuery = supabase
+    // Verify user exists
+    const { data: user, error: userError } = await supabase
       .from('users')
-      .select('id, role_id, roles(name)')
-      .eq('is_active', true);
-
-    switch (target) {
-      case 'BUYERS':
-        const buyerRoleId = await getRoleIdByName('ACHETEUR');
-        userQuery = userQuery.eq('role_id', buyerRoleId);
-        break;
-      case 'SELLERS':
-        const sellerRoleId = await getRoleIdByName('VENDEUR');
-        userQuery = userQuery.eq('role_id', sellerRoleId);
-        break;
-      // 'ALL' - pas de filtre supplémentaire
-    }
-
-    const { data: targetUsers, error: usersError } = await userQuery;
-    if (usersError) throw usersError;
-
-    if (!targetUsers || targetUsers.length === 0) {
-      return res.status(400).json({ error: "Aucun utilisateur trouvé pour la cible spécifiée" });
-    }
-
-    // Créer les notifications pour chaque utilisateur
-    const notifications = targetUsers.map(user => ({
-      user_id: user.id,
-      title,
-      message,
-      type,
-      is_urgent: is_urgent || false,
-      sent_by: adminId,
-      target_group: target,
-      read: false,
-      created_at: new Date().toISOString()
-    }));
-
-    const { data: insertedNotifications, error: insertError } = await supabase
-      .from('notifications')
-      .insert(notifications)
-      .select();
-
-    if (insertError) throw insertError;
-
-    // Log l'action admin
-    await addLog(adminId, 'BULK_NOTIFICATION_SENT', {
-      title,
-      target,
-      recipientCount: targetUsers.length,
-      type,
-      is_urgent
-    });
-
-    res.status(201).json({
-      message: `Notification envoyée à ${targetUsers.length} utilisateur(s)`,
-      notification_count: targetUsers.length,
-      target
-    });
-
-  } catch (err) {
-    console.error("Send bulk notification error:", err);
-    return res.status(500).json({ error: "Erreur serveur", details: err.message });
-  }
-}
-
-// 🆕 2. Historique des notifications envoyées (pour admin)
-export async function getNotificationHistory(req, res) {
-  try {
-    const { data: notifications, error } = await supabase
-      .from('notifications')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(100); // Limiter pour les performances
-
-    if (error) throw error;
-
-    // Compter les destinataires par notification groupée
-    const notificationsWithStats = await Promise.all(
-      (notifications || []).map(async (notif) => {
-        const { count } = await supabase
-          .from('notifications')
-          .select('id', { count: 'exact' })
-          .eq('title', notif.title)
-          .eq('created_at', notif.created_at);
-
-        return {
-          ...notif,
-          recipient_count: count || 1
-        };
-      })
-    );
-
-    // Filtrer les doublons (notifications groupées)
-    const uniqueNotifications = notificationsWithStats.filter((notif, index, self) =>
-      index === self.findIndex(n => 
-        n.title === notif.title && n.created_at === notif.created_at
-      )
-    );
-
-    res.json({ notifications: uniqueNotifications });
-  } catch (err) {
-    console.error("Get notification history error:", err);
-    return res.status(500).json({ error: "Erreur serveur", details: err.message });
-  }
-}
-
-// 🆕 3. Supprimer une notification (admin)
-export async function adminDeleteNotification(req, res) {
-  try {
-    const adminId = req.user.sub;
-    const { id } = req.params;
-
-    // Supprimer toutes les instances de cette notification
-    const { data: notification } = await supabase
-      .from('notifications')
-      .select('title, created_at')
-      .eq('id', id)
+      .select('id')
+      .eq('id', user_id)
       .single();
 
-    if (!notification) {
-      return res.status(404).json({ error: "Notification introuvable" });
+    if (userError || !user) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'User not found' 
+      });
     }
 
-    const { error } = await supabase
+    let query = supabase
       .from('notifications')
-      .delete()
-      .eq('title', notification.title)
-      .eq('created_at', notification.created_at);
+      .select('*', { count: 'exact' })
+      .eq('user_id', user_id);
 
-    if (error) throw error;
+    // Apply filters
+    if (is_read !== undefined) query = query.eq('is_read', is_read === 'true');
+    if (type) query = query.eq('type', type);
 
-    await addLog(adminId, 'NOTIFICATION_DELETED', { notificationId: id });
+    // Sorting
+    query = query.order(sort_by, { ascending: sort_order === 'asc' });
 
-    res.json({ message: "Notification et toutes ses instances supprimées ✅" });
-  } catch (err) {
-    console.error("Admin delete notification error:", err);
-    return res.status(500).json({ error: "Erreur serveur", details: err.message });
-  }
-}
+    const { data, error, count } = await query.range(offset, offset + limitNum - 1);
 
-// 🆕 4. Statistiques utilisateurs
-export async function getUserStats(req, res) {
-  try {
-    const [total, buyers, sellers] = await Promise.all([
-      supabase.from('users').select('id', { count: 'exact' }).eq('is_active', true),
-      supabase.from('users').select('id', { count: 'exact' }).eq('is_active', true).eq('role_id', await getRoleIdByName('ACHETEUR')),
-      supabase.from('users').select('id', { count: 'exact' }).eq('is_active', true).eq('role_id', await getRoleIdByName('VENDEUR'))
-    ]);
+    if (error) {
+      console.error('Error fetching notifications:', error);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to fetch notifications' 
+      });
+    }
 
     res.json({
-      total: total.count || 0,
-      buyers: buyers.count || 0,
-      sellers: sellers.count || 0
+      success: true,
+      data: data || [],
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: count || 0,
+        totalPages: Math.ceil((count || 0) / limitNum)
+      }
     });
-  } catch (err) {
-    console.error("Get user stats error:", err);
-    return res.status(500).json({ error: "Erreur serveur", details: err.message });
+
+  } catch (error) {
+    console.error('Server error in getUserNotifications:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Internal server error' 
+    });
   }
-}
+};
 
-// =====================================
-// ✅ FONCTIONS EXISTANTES (conservées)
-// =====================================
-
-export async function getMyNotifications(req, res) {
+// CREATE notification
+export const createNotification = async (req, res) => {
   try {
-    const userId = req.user.sub;
+    const { 
+      user_id, 
+      title, 
+      message, 
+      type, 
+      related_id,
+      related_type 
+    } = req.body;
 
-    const { data: notifications, error } = await supabase
-      .from("notifications")
-      .select("*")
-      .eq("user_id", userId)
-      .order("read", { ascending: true })
-      .order("created_at", { ascending: false });
-
-    if (error) throw error;
-
-    return res.json({ notifications: notifications || [] });
-  } catch (err) {
-    console.error("Get notifications error:", err);
-    return res.status(500).json({ error: "Erreur serveur", details: err.message });
-  }
-}
-
-export async function markAsRead(req, res) {
-  try {
-    const userId = req.user.sub;
-    const { id } = req.params;
-
-    const { data: updated, error } = await supabase
-      .from("notifications")
-      .update({ read: true, read_at: new Date().toISOString() })
-      .eq("id", id)
-      .eq("user_id", userId)
-      .select("id, read")
+    // Verify user exists
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('id', user_id)
       .single();
 
-    if (error) throw error;
-
-    if (!updated) {
-        return res.status(404).json({ error: "Notification introuvable" });
+    if (userError || !user) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid user' 
+      });
     }
 
-    return res.json({ message: "Notification marquée comme lue ✅", notification: updated });
-  } catch (err) {
-    console.error("Mark as read error:", err);
-    return res.status(500).json({ error: "Erreur serveur", details: err.message });
+    const { data, error } = await supabase
+      .from('notifications')
+      .insert([{
+        user_id,
+        title,
+        message,
+        type: type || 'info',
+        related_id: related_id || null,
+        related_type: related_type || null,
+        is_read: false,
+        created_at: new Date().toISOString()
+      }])
+      .select();
+
+    if (error) {
+      console.error('Error creating notification:', error);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to create notification' 
+      });
+    }
+
+    res.status(201).json({
+      success: true,
+      message: 'Notification created successfully',
+      data: data[0]
+    });
+
+  } catch (error) {
+    console.error('Server error in createNotification:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Internal server error' 
+    });
   }
-}
+};
 
-export async function markAllAsRead(req, res) {
-  try {
-    const userId = req.user.sub;
+// MARK notification as read
+export const markNotificationAsRead = [
+  validateUUID('id'),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
 
-    const { error } = await supabase
-      .from("notifications")
-      .update({ read: true, read_at: new Date().toISOString() })
-      .eq("user_id", userId)
-      .eq("read", false);
+      const { data, error } = await supabase
+        .from('notifications')
+        .update({ 
+          is_read: true,
+          read_at: new Date().toISOString()
+        })
+        .eq('id', id)
+        .select();
 
-    if (error) throw error;
+      if (error) {
+        console.error('Error updating notification:', error);
+        return res.status(500).json({ 
+          success: false, 
+          error: 'Failed to update notification' 
+        });
+      }
 
-    return res.json({ message: "Toutes les notifications marquées comme lues ✅" });
-  } catch (err) {
-    console.error("Mark all as read error:", err);
-    return res.status(500).json({ error: "Erreur serveur", details: err.message });
+      if (!data || data.length === 0) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Notification not found' 
+        });
+      }
+
+      res.json({
+        success: true,
+        message: 'Notification marked as read',
+        data: data[0]
+      });
+
+    } catch (error) {
+      console.error('Server error in markNotificationAsRead:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Internal server error' 
+      });
+    }
   }
-}
+];
 
-export async function deleteNotification(req, res) {
-  try {
-    const userId = req.user.sub;
-    const { id } = req.params;
+// DELETE notification
+export const deleteNotification = [
+  validateUUID('id'),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
 
-    const { error } = await supabase
-      .from("notifications")
-      .delete()
-      .eq("id", id)
-      .eq("user_id", userId);
+      const { data, error } = await supabase
+        .from('notifications')
+        .delete()
+        .eq('id', id)
+        .select();
 
-    if (error) throw error;
+      if (error) {
+        console.error('Error deleting notification:', error);
+        return res.status(500).json({ 
+          success: false, 
+          error: 'Failed to delete notification' 
+        });
+      }
 
-    return res.json({ message: "Notification supprimée ✅" });
-  } catch (err) {
-    console.error("Delete notification error:", err);
-    return res.status(500).json({ error: "Erreur serveur", details: err.message });
+      if (!data || data.length === 0) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Notification not found' 
+        });
+      }
+
+      res.json({
+        success: true,
+        message: 'Notification deleted successfully'
+      });
+
+    } catch (error) {
+      console.error('Server error in deleteNotification:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Internal server error' 
+      });
+    }
   }
-}
-
-// =====================================
-// 🛠️ FONCTION UTILITAIRE
-// =====================================
-
-async function getRoleIdByName(name) {
-  const { data, error } = await supabase
-    .from("roles")
-    .select("id")
-    .eq("name", name)
-    .single();
-  
-  if (error || !data) throw new Error(`Role '${name}' non trouvé`);
-  return data.id;
-                  }
+];

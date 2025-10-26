@@ -1,228 +1,551 @@
-// =========================================================
-// src/controllers/authController.js (VERSION DÉFINITIVE AVEC LOGOUT)
-// =========================================================
+// src/controllers/authController.js
+import { supabase } from '../config/supabase.js';
+import Joi from 'joi';
 
-import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
-import { supabase } from "../server.js";
-import { addLog } from "./logController.js"; 
+// Schémas de validation pour l'authentification
+export const loginSchema = Joi.object({
+  email: Joi.string().email().required().messages({
+    'string.email': 'L\'email doit être une adresse valide',
+    'string.empty': 'L\'email est requis'
+  }),
+  password: Joi.string().min(6).required().messages({
+    'string.min': 'Le mot de passe doit contenir au moins 6 caractères',
+    'string.empty': 'Le mot de passe est requis'
+  })
+});
 
-const JWT_SECRET = process.env.JWT_SECRET;
-const JWT_EXPIRES_IN = "1000000d";
-const INVALID_CREDENTIALS_MSG = "Identifiants invalides."; 
-const AUTHORIZED_REGISTRATION_ROLES = ['ACHETEUR', 'VENDEUR']; 
+export const registerSchema = Joi.object({
+  // Informations de connexion
+  email: Joi.string().email().required().messages({
+    'string.email': 'L\'email doit être une adresse valide',
+    'string.empty': 'L\'email est requis'
+  }),
+  password: Joi.string().min(6).required().messages({
+    'string.min': 'Le mot de passe doit contenir au moins 6 caractères',
+    'string.empty': 'Le mot de passe est requis'
+  }),
+  confirm_password: Joi.string().valid(Joi.ref('password')).required().messages({
+    'any.only': 'Les mots de passe ne correspondent pas',
+    'string.empty': 'La confirmation du mot de passe est requise'
+  }),
 
-async function getRoleIdByName(name) {
-  const { data, error } = await supabase
-    .from("roles")
-    .select("id")
-    .eq("name", name)
-    .limit(1)
-    .single();
-  if (error || !data) throw new Error(`Role ID for '${name}' not found.`); 
-  return data.id;
-}
+  // Informations personnelles
+  username: Joi.string().min(3).max(30).pattern(/^[a-zA-Z0-9_]+$/).required().messages({
+    'string.min': 'Le nom d\'utilisateur doit contenir au moins 3 caractères',
+    'string.max': 'Le nom d\'utilisateur ne peut pas dépasser 30 caractères',
+    'string.pattern.base': 'Le nom d\'utilisateur ne peut contenir que des lettres, chiffres et underscores',
+    'string.empty': 'Le nom d\'utilisateur est requis'
+  }),
+  first_name: Joi.string().max(100).required().messages({
+    'string.max': 'Le prénom ne peut pas dépasser 100 caractères',
+    'string.empty': 'Le prénom est requis'
+  }),
+  last_name: Joi.string().max(100).required().messages({
+    'string.max': 'Le nom ne peut pas dépasser 100 caractères',
+    'string.empty': 'Le nom est requis'
+  }),
 
-// ========================
-// 🧑‍🏭 1. Register (CRÉATION AVEC RÔLE)
-// ========================
-export async function register(req, res) {
+  // Contact
+  phone: Joi.string().pattern(/^\+?[0-9\s\-\(\)]{10,}$/).required().messages({
+    'string.pattern.base': 'Le numéro de téléphone doit être valide',
+    'string.empty': 'Le numéro de téléphone est requis'
+  }),
+  
+  // Rôle
+  role: Joi.string().valid('buyer', 'seller').required().messages({
+    'any.only': 'Le rôle doit être "acheteur" ou "vendeur"',
+    'string.empty': 'Le rôle est requis'
+  }),
+
+  // Adresse - SEULEMENT LE PAYS
+  country: Joi.string().max(100).required().messages({
+    'string.max': 'Le pays ne peut pas dépasser 100 caractères',
+    'string.empty': 'Le pays est requis'
+  }),
+
+  // Informations supplémentaires pour les vendeurs
+  seller_info: Joi.when('role', {
+    is: 'seller',
+    then: Joi.object({
+      shop_name: Joi.string().max(255).required().messages({
+        'string.max': 'Le nom de la boutique ne peut pas dépasser 255 caractères',
+        'string.empty': 'Le nom de la boutique est requis pour les vendeurs'
+      }),
+      shop_description: Joi.string().max(1000).optional().allow(''),
+      business_type: Joi.string().max(100).required().messages({
+        'string.max': 'Le type d\'entreprise ne peut pas dépasser 100 caractères',
+        'string.empty': 'Le type d\'entreprise est requis pour les vendeurs'
+      })
+    }).required(),
+    otherwise: Joi.optional()
+  }),
+
+  // Consentements
+  accept_terms: Joi.boolean().valid(true).required().messages({
+    'any.only': 'Vous devez accepter les conditions d\'utilisation',
+    'boolean.base': 'L\'acceptation des conditions est requise'
+  }),
+  accept_privacy: Joi.boolean().valid(true).required().messages({
+    'any.only': 'Vous devez accepter la politique de confidentialité',
+    'boolean.base': 'L\'acceptation de la politique de confidentialité est requise'
+  }),
+  newsletter: Joi.boolean().default(false)
+});
+
+export const validateAuthRequest = (schema) => {
+  return (req, res, next) => {
+    const { error, value } = schema.validate(req.body, { 
+      abortEarly: false,
+      stripUnknown: true 
+    });
+    
+    if (error) {
+      const errors = error.details.map(detail => ({
+        field: detail.path.join('.'),
+        message: detail.message,
+        type: detail.type
+      }));
+      return res.status(400).json({ 
+        success: false,
+        error: 'Validation des données échouée', 
+        details: errors 
+      });
+    }
+    
+    req.body = value;
+    next();
+  };
+};
+
+// LOGIN utilisateur
+export const login = [
+  validateAuthRequest(loginSchema),
+  async (req, res) => {
     try {
-        const { username, firstname, lastname, phone, email, password, role } = req.body;
+      const { email, password } = req.body;
 
-        if (!username || !phone || !password || !role) {
-            return res.status(400).json({ error: "Le nom d'utilisateur, le téléphone, le mot de passe et le rôle sont requis" });
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) {
+        console.error('Login error:', error);
+        
+        // Messages d'erreur plus spécifiques
+        let errorMessage = 'Identifiants invalides';
+        if (error.message.includes('Invalid login credentials')) {
+          errorMessage = 'Email ou mot de passe incorrect';
+        } else if (error.message.includes('Email not confirmed')) {
+          errorMessage = 'Veuillez confirmer votre adresse email avant de vous connecter';
+        } else if (error.message.includes('Email rate limit exceeded')) {
+          errorMessage = 'Trop de tentatives de connexion. Veuillez réessayer plus tard.';
         }
-
-        const roleToAssign = role.toUpperCase();
-        if (!AUTHORIZED_REGISTRATION_ROLES.includes(roleToAssign)) {
-            return res.status(403).json({ error: `Rôle invalide ou non autorisé. Seuls les rôles ${AUTHORIZED_REGISTRATION_ROLES.join(' ou ')} sont permis à l'inscription.` });
-        }
-
-        const { data: existingUsers, error: checkError } = await supabase
-            .from("users")
-            .select("id")
-            .or(`phone.eq.${phone},username.eq.${username},email.eq.${email}`); 
-
-        if (checkError) throw checkError;
-        if (existingUsers && existingUsers.length > 0) {
-            return res.status(409).json({ error: "Un utilisateur avec ce téléphone, nom d'utilisateur ou e-mail existe déjà." });
-        }
-
-        const roleId = await getRoleIdByName(roleToAssign);
-        const password_hash = await bcrypt.hash(password, 12);
-
-        const { data: inserted, error } = await supabase
-            .from("users")
-            .insert([{
-                role_id: roleId,
-                username,
-                firstname,
-                lastname,
-                phone,
-                email: email ? email.toLowerCase() : null, 
-                password_hash,
-                is_super_admin: false, 
-                is_active: true, 
-                email_confirmed: false
-            }])
-            .select()
-            .single();
-
-        if (error) throw error;
-
-        await supabase.from("wallets").insert([{ user_id: inserted.id, balance: 0 }]);
-        addLog(inserted.id, 'USER_REGISTERED', { role: roleToAssign, ip: req.ip });
-
-        const token = jwt.sign({ sub: inserted.id, role_id: roleId, role: roleToAssign, is_super_admin: false }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
-
-        return res.status(201).json({
-            message: `Compte ${roleToAssign} créé avec succès ✅`,
-            user: { id: inserted.id, username: inserted.username, phone: inserted.phone, email: inserted.email, role: roleToAssign, is_super_admin: false },
-            token
+        
+        return res.status(401).json({ 
+          success: false,
+          error: errorMessage 
         });
-    } catch (err) {
-        console.error("Register error:", err);
-        const detail = err.message || err;
-        if (detail.includes("Role ID for")) {
-            return res.status(500).json({ error: "Erreur de configuration du rôle. Le rôle sélectionné n'existe pas dans la base de données.", details: detail });
+      }
+
+      // Récupérer le profil utilisateur depuis public.users avec relations complètes
+      const { data: profile, error: profileError } = await supabase
+        .from('users')
+        .select(`
+          *,
+          wallets (*),
+          shops (*),
+          user_payout_accounts (*)
+        `)
+        .eq('id', data.user.id)
+        .single();
+
+      if (profileError) {
+        console.error('Erreur de récupération du profil:', profileError);
+        return res.status(500).json({ 
+          success: false,
+          error: 'Profil utilisateur non trouvé' 
+        });
+      }
+
+      // Vérifier si l'utilisateur est actif
+      if (!profile.is_active) {
+        return res.status(403).json({ 
+          success: false,
+          error: 'Compte suspendu. Veuillez contacter le support.' 
+        });
+      }
+
+      res.json({
+        success: true,
+        message: 'Connexion réussie',
+        data: {
+          user: {
+            ...data.user,
+            profile: profile
+          },
+          session: data.session
         }
-        return res.status(500).json({ error: "Erreur serveur interne", details: detail });
+      });
+
+    } catch (error) {
+      console.error('Erreur serveur lors de la connexion:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Erreur interne du serveur' 
+      });
     }
-}
-
-// ========================
-// 🔑 2. Login (Connexion générique)
-// ========================
-export async function login(req, res) {
-  try {
-    const { identifier, password } = req.body;
-    if (!identifier || !password) return res.status(400).json({ error: "Identifiant et mot de passe requis" });
-
-    const { data: users, error } = await supabase
-      .from("users")
-      .select("*, roles(name)")
-      .or(`phone.eq.${identifier},username.eq.${identifier}`)
-      .limit(1);
-
-    if (error) throw error;
-    const user = users?.[0];
-    if (!user) return res.status(401).json({ error: INVALID_CREDENTIALS_MSG });
-
-    const roleName = user.roles?.name || user.role || 'UNKNOWN';
-
-    if (user.is_super_admin) {
-      return res.status(403).json({ error: "Ce compte doit utiliser le formulaire de connexion administrateur dédié." });
-    }
-
-    const match = await bcrypt.compare(password, user.password_hash);
-    if (!match) return res.status(401).json({ error: INVALID_CREDENTIALS_MSG });
-
-    if (!user.is_active) {
-        addLog(user.id, 'LOGIN_FAILED_INACTIVE', { identifier, ip: req.ip });
-        return res.status(403).json({ error: "Votre compte est inactif. Veuillez contacter le support." }); 
-    }
-
-    addLog(user.id, 'USER_LOGIN', { role: roleName, ip: req.ip });
-
-    const token = jwt.sign(
-        { sub: user.id, role_id: user.role_id, role: roleName, is_super_admin: false }, 
-        JWT_SECRET, 
-        { expiresIn: JWT_EXPIRES_IN }
-    );
-
-    return res.json({
-      message: "Connexion réussie ✅",
-      user: { id: user.id, username: user.username, phone: user.phone, email: user.email, role: roleName, is_super_admin: false },
-      token
-    });
-  } catch (err) {
-    console.error("Login error:", err);
-    return res.status(500).json({ error: "Erreur serveur interne", details: err.message || err });
   }
-}
+];
 
-// ========================
-// 👑 3. Super Admin Login (STRICTE 4 CHAMPS)
-// ========================
-export async function superAdminLogin(req, res) {
-  try {
-    const { firstname, lastname, phone, password } = req.body;
-    if (!firstname || !lastname || !phone || !password) {
-      return res.status(400).json({ error: "Nom, Prénom, Téléphone et Mot de passe sont requis." });
+// REGISTER utilisateur avec pays seulement
+export const register = [
+  validateAuthRequest(registerSchema),
+  async (req, res) => {
+    try {
+      const { 
+        email, 
+        password, 
+        username, 
+        first_name, 
+        last_name, 
+        phone,
+        role,
+        country, // SEULEMENT LE PAYS
+        seller_info,
+        newsletter
+      } = req.body;
+
+      console.log('Tentative d\'inscription:', { email, username, role, country });
+
+      // Vérifier si l'username ou email existe déjà
+      const { data: existingUser, error: checkError } = await supabase
+        .from('users')
+        .select('id, username, email')
+        .or(`username.ilike.${username},email.ilike.${email}`)
+        .single();
+
+      if (existingUser) {
+        const field = existingUser.username.toLowerCase() === username.toLowerCase() ? 'username' : 'email';
+        return res.status(409).json({ 
+          success: false,
+          error: `${field === 'username' ? 'Le nom d\'utilisateur' : 'L\'email'} est déjà utilisé` 
+        });
+      }
+
+      // Créer l'utilisateur dans l'auth Supabase
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            username,
+            first_name,
+            last_name,
+            phone,
+            role,
+            country, // Stocker le pays dans les métadonnées
+            newsletter: newsletter || false
+          },
+          emailRedirectTo: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/confirm`
+        }
+      });
+
+      if (authError) {
+        console.error('Erreur d\'inscription auth:', authError);
+        
+        let errorMessage = authError.message;
+        if (authError.message.includes('User already registered')) {
+          errorMessage = 'Un compte avec cet email existe déjà';
+        } else if (authError.message.includes('Password should be at least')) {
+          errorMessage = 'Le mot de passe doit contenir au moins 6 caractères';
+        }
+        
+        return res.status(400).json({ 
+          success: false,
+          error: errorMessage 
+        });
+      }
+
+      if (!authData.user) {
+        return res.status(500).json({ 
+          success: false,
+          error: 'Erreur lors de la création du compte' 
+        });
+      }
+
+      // Créer le profil utilisateur dans public.users
+      const userProfileData = {
+        id: authData.user.id,
+        username,
+        email,
+        first_name,
+        last_name,
+        phone,
+        country, // SEULEMENT LE PAYS
+        role,
+        newsletter: newsletter || false,
+        is_active: true,
+        email_confirmed: false,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+
+      const { data: profileData, error: profileError } = await supabase
+        .from('users')
+        .insert([userProfileData])
+        .select()
+        .single();
+
+      if (profileError) {
+        console.error('Erreur de création du profil:', profileError);
+        
+        // Rollback: supprimer l'utilisateur auth
+        try {
+          await supabase.auth.admin.deleteUser(authData.user.id);
+        } catch (deleteError) {
+          console.error('Erreur lors de la suppression de l\'utilisateur auth:', deleteError);
+        }
+        
+        return res.status(500).json({ 
+          success: false,
+          error: 'Erreur lors de la création du profil utilisateur' 
+        });
+      }
+
+      // Créer le wallet pour l'utilisateur
+      const { error: walletError } = await supabase
+        .from('wallets')
+        .insert([{
+          user_id: authData.user.id,
+          balance: 0,
+          currency: 'XOF',
+          is_active: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }]);
+
+      if (walletError) {
+        console.error('Erreur de création du wallet:', walletError);
+        // Continuer même si le wallet échoue
+      }
+
+      // Si l'utilisateur est un vendeur, créer sa boutique
+      if (role === 'seller' && seller_info) {
+        const { error: shopError } = await supabase
+          .from('shops')
+          .insert([{
+            user_id: authData.user.id,
+            name: seller_info.shop_name,
+            description: seller_info.shop_description || `Bienvenue dans la boutique de ${username}`,
+            business_type: seller_info.business_type,
+            contact_email: email,
+            contact_phone: phone,
+            country: country, // Utiliser le pays de l'utilisateur
+            is_active: true,
+            verified: false,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          }]);
+
+        if (shopError) {
+          console.error('Erreur de création de la boutique:', shopError);
+          // Continuer même si la boutique échoue
+        }
+      }
+
+      // Préparer la réponse
+      const response = {
+        success: true,
+        message: 'Inscription réussie!',
+        data: {
+          user: {
+            ...authData.user,
+            profile: profileData
+          }
+        }
+      };
+
+      // Ajouter le message de confirmation email si nécessaire
+      if (authData.user?.identities?.length === 0) {
+        response.message = 'Inscription réussie! Veuillez vérifier votre email pour confirmer votre compte.';
+        response.requires_email_confirmation = true;
+      } else if (authData.session) {
+        response.data.session = authData.session;
+      }
+
+      res.status(201).json(response);
+
+    } catch (error) {
+      console.error('Erreur serveur lors de l\'inscription:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Erreur interne du serveur' 
+      });
     }
-
-    const { data: admins, error } = await supabase
-      .from("users")
-      .select("*, roles(name)")
-      .eq("firstname", firstname)
-      .eq("lastname", lastname)
-      .eq("phone", phone)
-      .eq("is_super_admin", true)
-      .limit(1);
-
-    if (error) throw error;
-
-    if (!admins || admins.length === 0) {
-        console.warn(`[SECURITY] Tentative de connexion Admin échouée (informations ne correspondent pas).`);
-        return res.status(401).json({ error: INVALID_CREDENTIALS_MSG });
-    }
-
-    const admin = admins[0];
-    const roleName = admin.roles?.name || admin.role || 'SUPER_ADMIN';
-
-    const match = await bcrypt.compare(password, admin.password_hash);
-    if (!match) {
-        console.warn(`[SECURITY] Tentative de connexion Admin échouée (mot de passe incorrect).`);
-        return res.status(401).json({ error: INVALID_CREDENTIALS_MSG });
-    }
-
-    if (!admin.is_active) {
-        addLog(admin.id, 'ADMIN_LOGIN_FAILED_INACTIVE', { phone, ip: req.ip });
-        return res.status(403).json({ error: "Le compte administrateur est inactif." });
-    }
-
-    const token = jwt.sign(
-        { sub: admin.id, role_id: admin.role_id, role: roleName, is_super_admin: true }, 
-        JWT_SECRET, 
-        { expiresIn: JWT_EXPIRES_IN }
-    );
-
-    addLog(admin.id, 'SUPER_ADMIN_LOGIN', { phone: phone, ip: req.ip });
-
-    return res.json({
-      message: "Connexion Super Admin réussie 👑",
-      user: { id: admin.id, username: admin.username, phone: admin.phone, email: admin.email, role: roleName, is_super_admin: true },
-      token
-    });
-  } catch (err) {
-    console.error("Super Admin login error:", err);
-    return res.status(500).json({ error: "Erreur serveur interne." });
   }
-}
+];
 
-// ========================
-// 🚪 4. Logout (Déconnexion)
-// ========================
-export async function logout(req, res) {
+// LOGOUT utilisateur
+export const logout = async (req, res) => {
   try {
-    if (!req.user || !req.user.id) {
-      return res.status(401).json({ error: "Utilisateur non authentifié" });
+    const { error } = await supabase.auth.signOut();
+
+    if (error) {
+      console.error('Erreur de déconnexion:', error);
+      return res.status(400).json({ 
+        success: false,
+        error: error.message 
+      });
     }
 
-    // Log de déconnexion
-    await addLog(req.user.id, 'USER_LOGOUT', { 
-      user_role: req.user.role,
-      is_super_admin: req.user.is_super_admin,
-      ip: req.ip 
+    res.json({
+      success: true,
+      message: 'Déconnexion réussie'
     });
 
-    return res.json({ 
-      success: true, 
-      message: "Déconnexion réussie ✅" 
+  } catch (error) {
+    console.error('Erreur serveur lors de la déconnexion:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Erreur interne du serveur' 
     });
-  } catch (err) {
-    console.error("Logout error:", err);
-    return res.status(500).json({ error: "Erreur serveur lors de la déconnexion", details: err.message });
   }
-             }
+};
+
+// GET current user profile
+export const getCurrentUser = async (req, res) => {
+  try {
+    const { data: { user }, error } = await supabase.auth.getUser();
+
+    if (error || !user) {
+      return res.status(401).json({ 
+        success: false,
+        error: 'Non authentifié' 
+      });
+    }
+
+    // Construire la query en fonction du rôle
+    let query = supabase
+      .from('users')
+      .select(`
+        *,
+        wallets (*),
+        user_payout_accounts (*)
+      `)
+      .eq('id', user.id);
+
+    // Ajouter les relations spécifiques au rôle
+    const userMetadata = user.user_metadata || {};
+    if (userMetadata.role === 'seller') {
+      query = query.select(`
+        *,
+        wallets (*),
+        user_payout_accounts (*),
+        shops (*, 
+          products (*, 
+            categories (*),
+            product_files (*)
+          )
+        ),
+        freelance_missions!freelance_missions_client_id_fkey (*)
+      `);
+    } else if (userMetadata.role === 'buyer') {
+      query = query.select(`
+        *,
+        wallets (*),
+        user_payout_accounts (*),
+        orders (*, 
+          order_items (*, 
+            products (*,
+              categories (*),
+              shops (*)
+            )
+          )
+        ),
+        freelance_missions!freelance_missions_freelance_id_fkey (
+          *,
+          clients:users!freelance_missions_client_id_fkey (*),
+          categories (*)
+        )
+      `);
+    }
+
+    const { data: profile, error: profileError } = await query.single();
+
+    if (profileError) {
+      console.error('Erreur de récupération du profil:', profileError);
+      return res.status(500).json({ 
+        success: false,
+        error: 'Erreur lors de la récupération du profil' 
+      });
+    }
+
+    // Vérifier si l'utilisateur est actif
+    if (!profile.is_active) {
+      return res.status(403).json({ 
+        success: false,
+        error: 'Compte suspendu' 
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        ...user,
+        profile: profile
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur serveur lors de la récupération du profil:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Erreur interne du serveur' 
+    });
+  }
+};
+
+// REFRESH token
+export const refreshToken = async (req, res) => {
+  try {
+    const { refresh_token } = req.body;
+
+    if (!refresh_token) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Le refresh token est requis' 
+      });
+    }
+
+    const { data, error } = await supabase.auth.refreshSession({
+      refresh_token
+    });
+
+    if (error) {
+      console.error('Erreur de rafraîchissement du token:', error);
+      return res.status(401).json({ 
+        success: false,
+        error: 'Refresh token invalide ou expiré' 
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Token rafraîchi avec succès',
+      data: {
+        access_token: data.session.access_token,
+        refresh_token: data.session.refresh_token,
+        expires_in: data.session.expires_in,
+        user: data.user
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur serveur lors du rafraîchissement du token:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Erreur interne du serveur' 
+    });
+  }
+};

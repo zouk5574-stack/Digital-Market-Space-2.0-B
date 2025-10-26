@@ -1,59 +1,47 @@
 // src/middleware/validation.js
-const Joi = require('joi');
+import Joi from 'joi';
 
-// Schémas de validation
-const productSchema = Joi.object({
+export const productSchema = Joi.object({
   name: Joi.string().min(1).max(255).required(),
   price: Joi.number().min(0).precision(2).required(),
-  description: Joi.string().max(1000).optional(),
+  description: Joi.string().max(2000).optional(),
   category_id: Joi.string().uuid().required(),
   shop_id: Joi.string().uuid().required(),
-  stock_quantity: Joi.number().integer().min(0).optional(),
-  is_active: Joi.boolean().optional()
+  stock_quantity: Joi.number().integer().min(0).default(0),
+  is_active: Joi.boolean().default(true)
 });
 
-const orderSchema = Joi.object({
+export const orderSchema = Joi.object({
   user_id: Joi.string().uuid().required(),
   total_amount: Joi.number().min(0).precision(2).required(),
-  status: Joi.string().valid('pending', 'confirmed', 'shipped', 'delivered', 'cancelled').required(),
-  shipping_address: Joi.string().max(500).required()
+  status: Joi.string().valid('pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled').required(),
+  shipping_address: Joi.object({
+    street: Joi.string().required(),
+    city: Joi.string().required(),
+    country: Joi.string().required(),
+    postal_code: Joi.string().required()
+  }).required()
 });
 
-const shopSchema = Joi.object({
-  name: Joi.string().min(1).max(255).required(),
-  description: Joi.string().max(1000).optional(),
-  user_id: Joi.string().uuid().required(),
-  is_active: Joi.boolean().optional()
-});
-
-const userSchema = Joi.object({
-  username: Joi.string().min(3).max(50).required(),
-  email: Joi.string().email().required(),
-  first_name: Joi.string().max(100).optional(),
-  last_name: Joi.string().max(100).optional(),
-  phone: Joi.string().pattern(/^\+?[\d\s-]{10,}$/).optional()
-});
-
-// Middleware de validation
-const validateRequest = (schema) => {
+export const validateRequest = (schema) => {
   return (req, res, next) => {
-    const { error } = schema.validate(req.body, { abortEarly: false });
+    const { error, value } = schema.validate(req.body, { 
+      abortEarly: false,
+      stripUnknown: true
+    });
     
     if (error) {
       const errors = error.details.map(detail => ({
         field: detail.path.join('.'),
         message: detail.message
       }));
-      return res.status(400).json({ error: 'Validation failed', details: errors });
+      return res.status(400).json({ 
+        error: 'Validation failed', 
+        details: errors 
+      });
     }
+    
+    req.body = value;
     next();
   };
-};
-
-module.exports = {
-  productSchema,
-  orderSchema,
-  shopSchema,
-  userSchema,
-  validateRequest
 };

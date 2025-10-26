@@ -1,18 +1,17 @@
-// routes/order.js
-import express from "express";
-import { authenticateJWT } from "../middleware/authMiddleware.js";
+// src/routes/order.js
+import express from 'express';
 import {
+  getOrders,
+  getOrderById,
   createOrder,
-  listMyOrders,
-  listMySales,
   updateOrderStatus
-} from "../controllers/orderController.js";
+} from '../controllers/orderController.js';
 
 const router = express.Router();
 
-router.post("/", authenticateJWT, createOrder);
-router.get("/mine", authenticateJWT, listMyOrders);
-router.get("/sales", authenticateJWT, listMySales);
-router.put("/:id", authenticateJWT, updateOrderStatus);
+router.get('/', getOrders);
+router.get('/:id', getOrderById);
+router.post('/', createOrder);
+router.patch('/:id/status', updateOrderStatus);
 
 export default router;

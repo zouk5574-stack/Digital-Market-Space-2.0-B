@@ -1,4 +1,3 @@
-// src/server.js
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
@@ -10,7 +9,7 @@ import { createClient } from '@supabase/supabase-js';
 import multer from 'multer';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import 'express-async-errors'; // pour propager correctement les erreurs async
+import 'express-async-errors';
 
 // ------------------------------------
 // Résolution des chemins pour ES modules
@@ -19,31 +18,17 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // ------------------------------------
-// Import des modules applicatifs (routes, crons, middlewares)
+// Import des routes (version ES modules)
 // ------------------------------------
+import routes from './routes/index.js'; // ✅ Point d'entrée unique
+
+// Import des crons
 import { startCleanupFilesCron } from './cron/cleanupFilesCron.js';
 import { startOrderCron } from './cron/orderCron.js';
 import { startPaymentCron } from './cron/paymentCron.js';
 import { startWithdrawalCron } from './cron/withdrawalCron.js';
 
 import { rawBodyMiddleware } from './middleware/rawBodyMiddleware.js';
-
-import authRoutes from './routes/auth.js';
-import adminRoutes from './routes/adminRoutes.js';
-import aiRoutes from './routes/aiRoutes.js';
-import fedapayRoutes from './routes/fedapayRoutes.js';
-import fileRoutes from './routes/fileRoutes.js';
-import freelanceRoutes from './routes/freelanceRoutes.js';
-import logRoutes from './routes/logRoutes.js';
-import notificationRoutes from './routes/notificationRoutes.js';
-import orderRoutes from './routes/order.js';
-import paymentRoutes from './routes/paymentRoutes.js';
-import paymentProviderRoutes from './routes/paymentProviderRoutes.js';
-import productRoutes from './routes/product.js';
-import statsRoutes from './routes/statsRoutes.js';
-import walletRoutes from './routes/walletRoutes.js';
-import withdrawalRoutes from './routes/withdrawalRoutes.js';
-import platformSettingsRoutes from './routes/admin/platformSettingsRoutes.js';
 
 // ------------------------------------
 // Initialisation Supabase
@@ -64,11 +49,10 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
 // Configuration du serveur
 // ------------------------------------
 const app = express();
-const port = parseInt(process.env.PORT, 10) || 3001;
+const port = parseInt(process.PORT, 10) || 3001;
 const isProd = process.env.NODE_ENV === 'production';
 
-// -- Trust proxy (utile si tu utilises un reverse proxy / heroku / vercel)
-// configure selon ton infra
+// Trust proxy
 if (process.env.TRUST_PROXY === 'true') {
   app.set('trust proxy', 1);
 }
@@ -76,31 +60,33 @@ if (process.env.TRUST_PROXY === 'true') {
 // ------------------------------------
 // Middlewares de sécurité et performances
 // ------------------------------------
-app.use(helmet()); // headers de sécurité
-app.use(compression()); // gzip
+app.use(helmet());
+app.use(compression());
 app.use(morgan(process.env.LOG_FORMAT || (isProd ? 'combined' : 'dev')));
 
-// Rate limiter global (tu peux affiner par route)
+// Rate limiter global
 const limiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 120, // max 120 requêtes par IP / minute
+  windowMs: 60 * 1000,
+  max: 120,
   standardHeaders: true,
   legacyHeaders: false,
 });
 app.use(limiter);
 
 // ------------------------------------
-// CORS - lecture de CORS_ORIGIN (peut être une liste comma-separated)
+// CORS Configuration
 // ------------------------------------
 const rawOrigins = process.env.CORS_ORIGIN || '*';
-let corsOptions = { methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'] };
+let corsOptions = { 
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], 
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'] 
+};
 
 if (rawOrigins !== '*') {
   const origins = rawOrigins.split(',').map(s => s.trim());
   corsOptions = {
     ...corsOptions,
     origin: function (origin, callback) {
-      // Allow non-browser requests (curl, server-to-server) with no origin
       if (!origin) return callback(null, true);
       if (origins.indexOf(origin) !== -1) return callback(null, true);
       return callback(new Error('CORS policy: origin not allowed'));
@@ -113,7 +99,7 @@ if (rawOrigins !== '*') {
 app.use(cors(corsOptions));
 
 // ------------------------------------
-// Multer configuration (upload memory storage, limite 10MB)
+// Multer configuration
 // ------------------------------------
 export const upload = multer({
   storage: multer.memoryStorage(),
@@ -121,7 +107,7 @@ export const upload = multer({
 });
 
 // ------------------------------------
-// ROUTES - health check + webhook (raw body) + middlewares json/urlencoded
+// Configuration des routes
 // ------------------------------------
 
 // Health check
@@ -134,32 +120,18 @@ app.get('/', (req, res) => {
   });
 });
 
-// IMPORTANT: webhook qui nécessite raw body (ex: signature validation)
-app.post('/api/fedapay/webhook', rawBodyMiddleware, fedapayRoutes);
+// IMPORTANT: Webhook FedaPay avec raw body
+app.post('/api/fedapay/webhook', rawBodyMiddleware, (req, res) => {
+  // Cette route sera gérée par le contrôleur FedaPay
+  require('./controllers/fedapayController.js').handleWebhook(req, res);
+});
 
-// Body parsers (après webhook middleware pour laisser rawBody intact)
+// Body parsers (après webhook pour préserver rawBody)
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Routes applicatives
-app.use('/api/auth', authRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/ai', aiRoutes);
-app.use('/api/files', upload.single('file'), fileRoutes);
-app.use('/api/freelance', freelanceRoutes);
-app.use('/api/logs', logRoutes);
-app.use('/api/notifications', notificationRoutes);
-app.use('/api/orders', orderRoutes);
-app.use('/api/payments', paymentRoutes);
-app.use('/api/payment-providers', paymentProviderRoutes);
-app.use('/api/products', productRoutes);
-app.use('/api/stats', statsRoutes);
-app.use('/api/wallet', walletRoutes);
-app.use('/api/withdrawals', withdrawalRoutes);
-app.use('/admin/settings', platformSettingsRoutes);
-
-// Routes FedaPay supplémentaires (API / console actions)
-app.use('/api/fedapay', fedapayRoutes);
+// ✅ TOUTES LES ROUTES VIA LE POINT D'ENTRÉE UNIQUE
+app.use('/api', routes);
 
 // ------------------------------------
 // Routes 404
@@ -216,27 +188,10 @@ const server = app.listen(port, async () => {
   console.log(`🚀 Server running on port: ${port}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`📊 Supabase connected: ${supabaseUrl ? '✅' : '❌'}`);
-  console.log(`📋 Available routes:`);
-  console.log(`   › GET  / (health check)`);
-  console.log(`   › POST /api/fedapay/webhook`);
-  console.log(`   › POST /api/auth/*`);
-  console.log(`   › GET/POST /api/admin/*`);
-  console.log(`   › POST /api/files/*`);
-  console.log(`   › GET/POST /api/products/*`);
-  console.log(`   › GET/POST /api/freelance/*`);
-  console.log(`   › GET/POST /api/orders/*`);
-  console.log(`   › GET /api/logs/* (admin)`);
-  console.log(`   › POST/GET /api/ai/* (assistant IA)`);
-  console.log(`   › POST/GET /api/fedapay/* (payments)`);
-  console.log(`   › GET/POST /api/notifications/*`);
-  console.log(`   › GET/POST /api/payments/*`);
-  console.log(`   › GET/POST /api/payment-providers/*`);
-  console.log(`   › GET /api/stats/*`);
-  console.log(`   › GET/POST /api/wallet/*`);
-  console.log(`   › GET/POST /api/withdrawals/*`);
+  console.log(`📋 Available routes via /api/*`);
   console.log(`==============================================\n`);
 
-  // Démarrage des crons (si erreur -> log mais ne crash pas le server)
+  // Démarrage des crons
   try {
     startCleanupFilesCron();
     startOrderCron();
@@ -249,26 +204,21 @@ const server = app.listen(port, async () => {
 });
 
 // ------------------------------------
-// Arrêt gracieux (SIGINT / SIGTERM)
+// Arrêt gracieux
 // ------------------------------------
 const gracefulShutdown = async (signal) => {
   console.log(`${signal} received, shutting down gracefully`);
   try {
-    // Si tes crons exportent des fonctions stop(), appelle-les ici (ex: stopCleanupFilesCron())
-    // try { await stopCleanupFilesCron(); } catch(e){ console.warn('stop cleanup cron failed', e); }
-
-    // fermer le server express
     if (server) {
       server.close(() => {
         console.log('HTTP server closed');
         process.exit(0);
       });
 
-      // en cas de timeout forcer l'arrêt
       setTimeout(() => {
         console.warn('Forcing shutdown after timeout');
         process.exit(1);
-      }, 30_000).unref();
+      }, 30000).unref();
     } else {
       process.exit(0);
     }

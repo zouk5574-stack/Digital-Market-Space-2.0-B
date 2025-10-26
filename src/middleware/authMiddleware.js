@@ -1,61 +1,57 @@
-// middleware/authMiddleware.js
-import jwt from "jsonwebtoken";
-import { supabase } from "../server.js";
+const { supabase } = require('../config/supabase');
 
-const JWT_SECRET = process.env.JWT_SECRET || "CHANGE_ME";
-
-/**
- * authenticateJWT: vérifie le token et attache req.user + req.user.db
- */
-export async function authenticateJWT(req, res, next) {
-  try {
-    const authHeader = req.headers.authorization || req.headers.Authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ error: "Missing or malformed Authorization header" });
+// Vérification des rôles multiples
+exports.authorize = (roles = []) => {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Non authentifié' });
     }
 
-    const token = authHeader.split(" ")[1];
-    let payload;
+    if (roles.length && !roles.includes(req.user.role)) {
+      return res.status(403).json({ 
+        error: 'Accès refusé. Permissions insuffisantes.',
+        required_roles: roles,
+        user_role: req.user.role
+      });
+    }
+
+    next();
+  };
+};
+
+// Vérification de propriété
+exports.requireOwnership = (resourceTable, paramName = 'id') => {
+  return async (req, res, next) => {
     try {
-      payload = jwt.verify(token, JWT_SECRET);
-    } catch (err) {
-      console.error("JWT verify error:", err);
-      return res.status(401).json({ error: "Invalid or expired token" });
+      const resourceId = req.params[paramName];
+      const userId = req.user.id;
+
+      const { data: resource, error } = await supabase
+        .from(resourceTable)
+        .select('user_id')
+        .eq('id', resourceId)
+        .single();
+
+      if (error || !resource) {
+        return res.status(404).json({ error: 'Ressource non trouvée' });
+      }
+
+      // Admins peuvent accéder à tout
+      if (req.user.role === 'admin') {
+        return next();
+      }
+
+      // Vérifier la propriété
+      if (resource.user_id !== userId) {
+        return res.status(403).json({ 
+          error: 'Accès refusé. Vous n\'êtes pas propriétaire de cette ressource.' 
+        });
+      }
+
+      next();
+    } catch (error) {
+      console.error('Ownership check error:', error);
+      res.status(500).json({ error: 'Erreur de vérification des permissions' });
     }
-
-    req.user = {
-      sub: payload.sub,
-      role_id: payload.role_id,
-      is_super_admin: payload.is_super_admin === true || payload.is_super_admin === "true",
-      jwt_payload: payload
-    };
-
-    const { data: userRow, error } = await supabase
-      .from("users")
-      .select("id, role, role_id, is_super_admin, admin_username, email")
-      .eq("id", payload.sub)
-      .limit(1)
-      .maybeSingle();
-
-    if (error) {
-      console.error("authMiddleware: error fetching user row:", error);
-      return res.status(401).json({ error: "Unable to validate token user" });
-    }
-    if (!userRow) {
-      return res.status(401).json({ error: "Invalid token user" });
-    }
-
-    req.user.db = userRow;
-    req.user.role = req.user.db.role;
-    req.user.is_super_admin = req.user.is_super_admin || req.user.db.is_super_admin;
-
-    return next();
-  } catch (err) {
-    console.error("authenticateJWT unexpected error:", err);
-    return res.status(500).json({ error: "Authentication error" });
-  }
-}
-
-// Alias utilisés ailleurs dans le projet
-export const protect = authenticateJWT;
-export const authMiddleware = authenticateJWT; // ✅ Compatibilité complète
+  };
+};

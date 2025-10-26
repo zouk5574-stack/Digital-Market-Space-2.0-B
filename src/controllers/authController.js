@@ -34,15 +34,15 @@ export const registerSchema = Joi.object({
     'string.min': 'Le nom d\'utilisateur doit contenir au moins 3 caractères',
     'string.max': 'Le nom d\'utilisateur ne peut pas dépasser 30 caractères',
     'string.pattern.base': 'Le nom d\'utilisateur ne peut contenir que des lettres, chiffres et underscores',
-    'string.empty': 'Le nom d\'utilisateur est requis'
+    'string.empty': 'Assurez-vous que ce soit des informations juste car une vérification d\'identité s\'imposeras et tout faux compte sera à bannir définitivement 🚫'
   }),
   first_name: Joi.string().max(100).required().messages({
     'string.max': 'Le prénom ne peut pas dépasser 100 caractères',
-    'string.empty': 'Le prénom est requis'
+    'string.empty': 'Assurez-vous que ce soit des informations juste car une vérification d\'identité s\'imposeras et tout faux compte sera à bannir définitivement 🚫'
   }),
   last_name: Joi.string().max(100).required().messages({
     'string.max': 'Le nom ne peut pas dépasser 100 caractères',
-    'string.empty': 'Le nom est requis'
+    'string.empty': 'Assurez-vous que ce soit des informations juste car une vérification d\'identité s\'imposeras et tout faux compte sera à bannir définitivement 🚫'
   }),
 
   // Contact

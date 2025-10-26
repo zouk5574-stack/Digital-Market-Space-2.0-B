@@ -1,28 +1,26 @@
-const express = require('express');
+import express from 'express';
 const router = express.Router();
 
-// Import des routes existantes
-const authRoutes = require('./authRoutes');
-const userRoutes = require('./userRoutes');
-const productRoutes = require('./productRoutes');
-const shopRoutes = require('./shopRoutes');
-const orderRoutes = require('./orderRoutes');
-const categoryRoutes = require('./categoryRoutes');
-const walletRoutes = require('./walletRoutes');
-const paymentRoutes = require('./paymentRoutes');
-const notificationRoutes = require('./notificationRoutes');
-const freelanceRoutes = require('./freelanceRoutes');
-const withdrawalRoutes = require('./withdrawalRoutes');
-const fileRoutes = require('./fileRoutes');
-
-// Nouvelles routes
-const adminRoutes = require('./adminRoutes');
-const statsRoutes = require('./statsRoutes');
-const aiRoutes = require('./aiRoutes');
-const fedapayRoutes = require('./fedapayRoutes');
-const logRoutes = require('./logRoutes');
-const paymentProviderRoutes = require('./paymentProviderRoutes');
-const platformSettingsRoutes = require('./platformSettingsRoutes');
+// Import des routes
+import authRoutes from './authRoutes.js';
+import userRoutes from './userRoutes.js';
+import productRoutes from './productRoutes.js';
+import shopRoutes from './shopRoutes.js';
+import orderRoutes from './orderRoutes.js';
+import categoryRoutes from './categoryRoutes.js';
+import walletRoutes from './walletRoutes.js';
+import paymentRoutes from './paymentRoutes.js';
+import notificationRoutes from './notificationRoutes.js';
+import freelanceRoutes from './freelanceRoutes.js';
+import withdrawalRoutes from './withdrawalRoutes.js';
+import fileRoutes from './fileRoutes.js';
+import adminRoutes from './adminRoutes.js';
+import statsRoutes from './statsRoutes.js';
+import aiRoutes from './aiRoutes.js';
+import fedapayRoutes from './fedapayRoutes.js';
+import messageRoutes from './messageRoutes.js';
+import commissionRoutes from './commissionRoutes.js';
+import platformSettingsRoutes from './platformSettingsRoutes.js';
 
 // Routes publiques
 router.use('/auth', authRoutes);
@@ -39,14 +37,14 @@ router.use('/notifications', notificationRoutes);
 router.use('/freelance', freelanceRoutes);
 router.use('/withdrawals', withdrawalRoutes);
 router.use('/files', fileRoutes);
+router.use('/messages', messageRoutes);
+router.use('/commissions', commissionRoutes);
 
-// Nouvelles routes
+// Routes admin et stats
 router.use('/admin', adminRoutes);
 router.use('/stats', statsRoutes);
 router.use('/ai', aiRoutes);
 router.use('/fedapay', fedapayRoutes);
-router.use('/logs', logRoutes);
-router.use('/payment-providers', paymentProviderRoutes);
 router.use('/platform-settings', platformSettingsRoutes);
 
-module.exports = router;
+export default router;

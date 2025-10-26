@@ -1,149 +1,77 @@
 // src/controllers/productController.js
-const express = require('express');
-const router = express.Router();
-const supabase = require('../config/supabaseClient');
-const { productSchema, validateRequest } = require('../middleware/validation');
+import { productSchema, validateRequest } from '../middleware/validation.js';
 
-// GET all products with pagination and filters
-router.get('/', async (req, res) => {
+// Ajouter la validation aux routes existantes
+router.post('/', validateRequest(productSchema), createProduct);
+router.put('/:id', validateRequest(productSchema), updateProduct);
+
+// Améliorer la fonction createProduct existante
+export const createProduct = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 12;
-    const offset = (page - 1) * limit;
-    const { category_id, shop_id, search } = req.query;
+    const { 
+      name, 
+      price, 
+      description, 
+      category_id, 
+      shop_id, 
+      stock_quantity,
+      is_active 
+    } = req.body;
 
-    let query = supabase
-      .from('products')
-      .select('*, categories(*), shops(*)', { count: 'exact' });
-
-    if (category_id) query = query.eq('category_id', category_id);
-    if (shop_id) query = query.eq('shop_id', shop_id);
-    if (search) query = query.ilike('name', `%${search}%`);
-
-    const { data, error, count } = await query
-      .eq('is_active', true)
-      .range(offset, offset + limit - 1);
-
-    if (error) throw error;
-
-    res.json({
-      success: true,
-      data,
-      pagination: {
-        page,
-        limit,
-        total: count,
-        totalPages: Math.ceil(count / limit)
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// GET product by ID
-router.get('/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const { data, error } = await supabase
-      .from('products')
-      .select('*, categories(*), shops(*, users(*))')
-      .eq('id', id)
+    // Vérifier que la boutique appartient à l'utilisateur
+    const { data: shop, error: shopError } = await supabase
+      .from('shops')
+      .select('user_id')
+      .eq('id', shop_id)
       .single();
 
-    if (error) throw error;
-    if (!data) return res.status(404).json({ success: false, error: 'Product not found' });
+    if (shopError || !shop) {
+      return res.status(404).json({ error: 'Shop not found' });
+    }
 
-    res.json({ success: true, data });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
+    // Vérifier que la catégorie existe
+    const { data: category, error: categoryError } = await supabase
+      .from('categories')
+      .select('id')
+      .eq('id', category_id)
+      .single();
 
-// CREATE new product
-router.post('/', validateRequest(productSchema), async (req, res) => {
-  try {
-    const { name, price, description, category_id, shop_id, stock_quantity } = req.body;
+    if (categoryError || !category) {
+      return res.status(404).json({ error: 'Category not found' });
+    }
 
     const { data, error } = await supabase
       .from('products')
       .insert([{
         name,
-        price,
-        description,
+        price: parseFloat(price),
+        description: description || '',
         category_id,
         shop_id,
-        stock_quantity: stock_quantity || 0,
-        is_active: true,
-        created_at: new Date()
+        stock_quantity: parseInt(stock_quantity) || 0,
+        is_active: is_active !== false,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
       }])
-      .select('*, categories(*), shops(*)');
+      .select(`
+        *,
+        categories (*),
+        shops (*)
+      `);
 
-    if (error) throw error;
+    if (error) {
+      console.error('Product creation error:', error);
+      return res.status(500).json({ error: 'Failed to create product' });
+    }
 
     res.status(201).json({
       success: true,
-      message: 'Product created successfully',
-      data: data[0]
+      data: data[0],
+      message: 'Product created successfully'
     });
+
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    console.error('Server error in createProduct:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
-});
-
-// UPDATE product
-router.put('/:id', validateRequest(productSchema), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { name, price, description, category_id, shop_id, stock_quantity, is_active } = req.body;
-
-    const { data, error } = await supabase
-      .from('products')
-      .update({
-        name,
-        price,
-        description,
-        category_id,
-        shop_id,
-        stock_quantity,
-        is_active,
-        updated_at: new Date()
-      })
-      .eq('id', id)
-      .select('*, categories(*), shops(*)');
-
-    if (error) throw error;
-    if (!data || data.length === 0) {
-      return res.status(404).json({ success: false, error: 'Product not found' });
-    }
-
-    res.json({
-      success: true,
-      message: 'Product updated successfully',
-      data: data[0]
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// DELETE product
-router.delete('/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const { error } = await supabase
-      .from('products')
-      .update({ is_active: false, updated_at: new Date() })
-      .eq('id', id);
-
-    if (error) throw error;
-
-    res.json({ success: true, message: 'Product deleted successfully' });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-module.exports = router;
+};

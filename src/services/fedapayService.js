@@ -1,362 +1,284 @@
-import FedaPay from 'fedapay';
-import { supabase } from '../config/supabase.js';
+import axios from 'axios';
+import { supabase } from '../config/database.js';
+import { AppError } from '../middleware/errorHandler.js';
+import { log } from '../utils/logger.js';
 
-// Configuration
-const PLATFORM_COMMISSION_RATE = 0.10; // 10%
-const FRONTEND_URL = process.env.FRONTEND_URL;
-
-class FedaPayService {
+export class FedapayService {
   constructor() {
     this.apiKey = process.env.FEDAPAY_API_KEY;
-    this.environment = process.env.FEDAPAY_ENVIRONMENT || 'sandbox';
-  }
-
-  /**
-   * Initialise la configuration FedaPay
-   */
-  initConfig(apiKey = null, environment = null) {
-    const configApiKey = apiKey || this.apiKey;
-    const configEnv = environment || this.environment;
+    this.baseURL = process.env.FEDAPAY_BASE_URL || 'https://api.fedapay.com/v1';
+    this.currency = 'XOF';
     
-    if (!configApiKey) {
-      throw new Error('Clé API FedaPay non configurée');
-    }
-
-    FedaPay.setApiKey(configApiKey);
-    FedaPay.setEnvironment(configEnv);
+    this.client = axios.create({
+      baseURL: this.baseURL,
+      timeout: 30000,
+      headers: {
+        'Authorization': `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json'
+      }
+    });
   }
 
-  /**
-   * Crée un paiement FedaPay pour produits
-   */
-  async createProductPayment(amount, description, orderId, buyerId, currency = 'XOF') {
+  // Initialisation de paiement
+  async initializePayment(paymentData) {
     try {
-      this.initConfig();
+      const { amount, description, customer, callback_url, metadata } = paymentData;
 
-      const transaction = await FedaPay.Transaction.create({
-        description: description,
-        amount: Math.round(amount),
-        currency: { code: currency },
-        metadata: {
-          type: 'ORDER_PRODUCT',
-          order_id: orderId,
-          buyer_id: buyerId,
-          platform: 'Digital Market Space'
+      // Validation du montant
+      if (amount < 100) {
+        throw new AppError('Le montant minimum est de 100 FCFA', 400);
+      }
+
+      if (amount > 1000000) {
+        throw new AppError('Le montant maximum est de 1,000,000 FCFA', 400);
+      }
+
+      const payload = {
+        amount: Math.round(amount), // FedaPay nécessite des entiers
+        currency: this.currency,
+        description: description || 'Paiement Digital Market Space',
+        customer: {
+          email: customer.email,
+          firstname: customer.first_name,
+          lastname: customer.last_name,
+          phone_number: customer.phone
         },
-        callback_url: `${FRONTEND_URL}/buyer/orders/${orderId}/status`,
-        cancel_url: `${FRONTEND_URL}/buyer/orders/${orderId}/cancel`,
-      });
-
-      const token = await transaction.generateToken();
-      
-      return {
-        success: true,
-        transaction: transaction,
-        payment_url: token.url,
-        transaction_id: transaction.id
+        callback_url: callback_url || `${process.env.BACKEND_URL}/api/payments/webhook`,
+        metadata: {
+          ...metadata,
+          platform: 'digital-market-space',
+          version: '2.0'
+        }
       };
 
-    } catch (error) {
-      console.error('❌ Erreur FedaPay createProductPayment:', error.message);
-      throw new Error(`Erreur création paiement: ${error.message}`);
-    }
-  }
+      const response = await this.client.post('/transactions', payload);
 
-  /**
-   * Crée un paiement escrow pour missions freelance
-   */
-  async createEscrowPayment(amount, description, missionId, clientId, freelancerId, currency = 'XOF') {
-    try {
-      this.initConfig();
+      if (!response.data || !response.data.transaction) {
+        throw new AppError('Réponse invalide de FedaPay', 500);
+      }
 
-      const transaction = await FedaPay.Transaction.create({
-        description: description,
-        amount: Math.round(amount),
-        currency: { code: currency },
-        metadata: {
-          type: 'ESCROW_SERVICE',
-          mission_id: missionId,
-          client_id: clientId,
-          freelancer_id: freelancerId,
-          platform: 'Digital Market Space',
-          escrow_conditions: 'mission_completion'
-        },
-        callback_url: `${FRONTEND_URL}/client/missions/${missionId}/status`,
-        cancel_url: `${FRONTEND_URL}/client/missions/${missionId}/cancel`,
-      });
+      const transaction = response.data.transaction;
 
-      const token = await transaction.generateToken();
-      
-      return {
-        success: true,
-        transaction: transaction,
-        payment_url: token.url,
-        transaction_id: transaction.id
-      };
-
-    } catch (error) {
-      console.error('❌ Erreur FedaPay createEscrowPayment:', error.message);
-      throw new Error(`Erreur création escrow: ${error.message}`);
-    }
-  }
-
-  /**
-   * Vérifie le statut d'une transaction
-   */
-  async getTransactionStatus(transactionId) {
-    try {
-      this.initConfig();
-
-      const transaction = await FedaPay.Transaction.retrieve(transactionId);
-      
-      return {
-        success: true,
-        transaction: transaction,
-        status: transaction.status,
+      // Log de la transaction
+      await this.logTransaction({
+        transaction_id: transaction.id,
         amount: transaction.amount,
-        currency: transaction.currency
-      };
+        currency: transaction.currency,
+        status: transaction.status,
+        fedapay_reference: transaction.reference,
+        customer_email: customer.email,
+        metadata: payload.metadata
+      });
 
-    } catch (error) {
-      console.error('❌ Erreur FedaPay getTransactionStatus:', error.message);
-      throw new Error(`Erreur vérification statut: ${error.message}`);
-    }
-  }
-
-  /**
-   * Effectue un remboursement
-   */
-  async refundTransaction(transactionId, amount, reason) {
-    try {
-      this.initConfig();
-
-      const refund = await FedaPay.Refund.create({
-        transaction_id: transactionId,
-        amount: Math.round(amount),
-        reason: reason.substring(0, 255)
+      log.info('Paiement FedaPay initialisé', {
+        transactionId: transaction.id,
+        amount: transaction.amount,
+        customer: customer.email
       });
 
       return {
-        success: true,
-        refund: refund,
-        refund_id: refund.id
+        transaction_id: transaction.id,
+        reference: transaction.reference,
+        amount: transaction.amount,
+        status: transaction.status,
+        payment_url: transaction.transaction_url,
+        qr_code: transaction.qr_code
       };
 
     } catch (error) {
-      console.error('❌ Erreur FedaPay refundTransaction:', error.message);
-      throw new Error(`Erreur remboursement: ${error.message}`);
-    }
-  }
+      log.error('Erreur initialisation paiement FedaPay:', error);
 
-  /**
-   * Valide une signature webhook
-   */
-  verifyWebhookSignature(payload, signature) {
-    const crypto = require('crypto');
-    const secret = process.env.FEDAPAY_WEBHOOK_SECRET;
-    
-    if (!secret) {
-      throw new Error('FEDAPAY_WEBHOOK_SECRET non configuré');
-    }
-
-    const computedSignature = crypto
-      .createHmac('sha256', secret)
-      .update(payload)
-      .digest('hex');
-
-    return crypto.timingSafeEqual(
-      Buffer.from(signature, 'utf8'),
-      Buffer.from(computedSignature, 'utf8')
-    );
-  }
-
-  // ===========================================
-  // 💰 LOGIQUE DE DISTRIBUTION DES FONDS
-  // ===========================================
-
-  /**
-   * Distribue les fonds d'une commande produit
-   */
-  async distributeOrderFunds(orderId, internalTransactionId) {
-    try {
-      // 1. Récupérer les articles de la commande
-      const { data: orderItems, error: itemsError } = await supabase
-        .from('order_items')
-        .select(`
-          quantity, 
-          price,
-          product:products(
-            shop:shops(
-              user_id,
-              commission_rate
-            )
-          )
-        `)
-        .eq('order_id', orderId);
-
-      if (itemsError || !orderItems || orderItems.length === 0) {
-        throw new Error(`Articles de commande non trouvés: ${orderId}`);
-      }
-
-      // 2. Calcul et répartition des fonds
-      const creditPromises = [];
-      let totalCommission = 0;
-
-      for (const item of orderItems) {
-        const shop = item.product.shop;
-        const saleAmount = item.price * item.quantity;
-        const commissionRate = shop.commission_rate || PLATFORM_COMMISSION_RATE;
-        const commissionAmount = saleAmount * commissionRate;
-        const sellerAmount = saleAmount - commissionAmount;
-        
-        totalCommission += commissionAmount;
-
-        // Enregistrer la commission
-        creditPromises.push(
-          supabase.from("commissions").insert({
-            order_id: orderId,
-            shop_id: shop.id,
-            seller_id: shop.user_id,
-            amount: commissionAmount,
-            seller_amount: sellerAmount,
-            rate: commissionRate,
-            status: "pending",
-            type: 'product'
-          })
-        );
-
-        // Créditer le portefeuille du vendeur
-        creditPromises.push(
-          supabase
-            .from('wallets')
-            .update({ 
-              pending_balance: supabase.raw('pending_balance + ??', [sellerAmount])
-            })
-            .eq('user_id', shop.user_id)
+      if (error.response) {
+        const fedapayError = error.response.data;
+        throw new AppError(
+          `Erreur FedaPay: ${fedapayError.message || 'Erreur de paiement'}`,
+          error.response.status
         );
       }
 
-      // 3. Exécution atomique
-      await Promise.all(creditPromises);
+      if (error.code === 'ECONNABORTED') {
+        throw new AppError('Timeout de connexion à FedaPay', 408);
+      }
 
-      // 4. Mettre à jour le statut de la commande
-      await supabase
-        .from('orders')
-        .update({ 
-          status: 'paid',
-          payment_status: 'completed',
-          paid_at: new Date().toISOString()
-        })
-        .eq('id', orderId);
-
-      return totalCommission;
-
-    } catch (error) {
-      console.error('❌ Erreur distributeOrderFunds:', error);
-      throw error;
+      throw new AppError('Erreur lors de l\'initialisation du paiement', 500);
     }
   }
 
-  /**
-   * Débloque les fonds escrow d'une mission
-   */
-  async releaseEscrowFunds(missionId, escrowTransactionId, freelancerId, finalPrice) {
+  // Vérification du statut d'une transaction
+  async verifyTransaction(transactionId) {
     try {
-      const commissionAmount = finalPrice * PLATFORM_COMMISSION_RATE;
-      const netAmount = finalPrice - commissionAmount;
+      const response = await this.client.get(`/transactions/${transactionId}`);
 
-      // 1. Enregistrer la commission
-      const commissionPromise = supabase.from("commissions").insert({
-        mission_id: missionId,
-        seller_id: freelancerId,
-        amount: commissionAmount,
-        rate: PLATFORM_COMMISSION_RATE,
-        status: "released",
-        type: 'mission'
+      if (!response.data || !response.data.transaction) {
+        throw new AppError('Transaction non trouvée', 404);
+      }
+
+      const transaction = response.data.transaction;
+
+      // Mise à jour du statut en base
+      await this.updateTransactionStatus(transactionId, transaction.status);
+
+      log.info('Statut transaction vérifié', {
+        transactionId,
+        status: transaction.status,
+        amount: transaction.amount
       });
 
-      // 2. Créditer le portefeuille du freelancer
-      const creditPromise = supabase
-        .from('wallets')
-        .update({ 
-          balance: supabase.raw('balance + ??', [netAmount])
-        })
-        .eq('user_id', freelancerId);
-
-      // 3. Mettre à jour la mission
-      const missionPromise = supabase
-        .from('freelance_missions')
-        .update({ 
-          status: 'completed',
-          escrow_status: 'released',
-          completed_at: new Date().toISOString()
-        })
-        .eq('id', missionId);
-
-      // 4. Exécution atomique
-      await Promise.all([commissionPromise, creditPromise, missionPromise]);
-
-      // 5. Créer une transaction pour le crédit
-      await supabase
-        .from('transactions')
-        .insert({
-          user_id: freelancerId,
-          amount: netAmount,
-          type: 'commission_release',
-          status: 'completed',
-          description: `Paiement mission #${missionId}`,
-          metadata: {
-            mission_id: missionId,
-            escrow_transaction_id: escrowTransactionId,
-            commission: commissionAmount
-          }
-        });
-
-      return commissionAmount;
+      return {
+        transaction_id: transaction.id,
+        reference: transaction.reference,
+        amount: transaction.amount,
+        status: transaction.status,
+        paid_at: transaction.paid_at,
+        created_at: transaction.created_at
+      };
 
     } catch (error) {
-      console.error('❌ Erreur releaseEscrowFunds:', error);
-      throw error;
+      log.error('Erreur vérification transaction FedaPay:', error);
+
+      if (error.response && error.response.status === 404) {
+        throw new AppError('Transaction non trouvée', 404);
+      }
+
+      throw new AppError('Erreur lors de la vérification de la transaction', 500);
     }
   }
 
-  /**
-   * Rembourse une mission (annulation)
-   */
-  async refundMission(missionId, clientId, amount) {
+  // Remboursement
+  async refundTransaction(transactionId, amount = null) {
     try {
-      // Mettre à jour le statut de la mission
-      await supabase
-        .from('freelance_missions')
-        .update({ 
-          status: 'cancelled',
-          escrow_status: 'refunded',
-          cancelled_at: new Date().toISOString()
-        })
-        .eq('id', missionId);
+      const payload = amount ? { amount: Math.round(amount) } : {};
 
-      // Créer une transaction de remboursement
-      await supabase
-        .from('transactions')
-        .insert({
-          user_id: clientId,
-          amount: amount,
-          type: 'refund',
-          status: 'completed',
-          description: `Remboursement mission #${missionId}`,
-          metadata: {
-            mission_id: missionId,
-            refund_reason: 'mission_cancelled'
-          }
-        });
+      const response = await this.client.post(
+        `/transactions/${transactionId}/refunds`,
+        payload
+      );
 
-      return true;
+      if (!response.data || !response.data.refund) {
+        throw new AppError('Réponse invalide de FedaPay', 500);
+      }
+
+      const refund = response.data.refund;
+
+      // Log du remboursement
+      await this.logRefund({
+        transaction_id: transactionId,
+        refund_id: refund.id,
+        amount: refund.amount,
+        status: refund.status,
+        fedapay_reference: refund.reference
+      });
+
+      log.info('Remboursement FedaPay initié', {
+        transactionId,
+        refundId: refund.id,
+        amount: refund.amount
+      });
+
+      return {
+        refund_id: refund.id,
+        transaction_id: transactionId,
+        amount: refund.amount,
+        status: refund.status,
+        reference: refund.reference,
+        created_at: refund.created_at
+      };
 
     } catch (error) {
-      console.error('❌ Erreur refundMission:', error);
-      throw error;
+      log.error('Erreur remboursement FedaPay:', error);
+
+      if (error.response) {
+        const fedapayError = error.response.data;
+        throw new AppError(
+          `Erreur remboursement: ${fedapayError.message || 'Erreur FedaPay'}`,
+          error.response.status
+        );
+      }
+
+      throw new AppError('Erreur lors du remboursement', 500);
+    }
+  }
+
+  // Log des transactions
+  async logTransaction(transactionData) {
+    try {
+      const { error } = await supabase
+        .from('payment_transactions')
+        .insert({
+          ...transactionData,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        });
+
+      if (error) {
+        console.error('Erreur log transaction:', error);
+      }
+    } catch (error) {
+      console.error('Erreur log transaction:', error);
+    }
+  }
+
+  // Mise à jour statut transaction
+  async updateTransactionStatus(transactionId, status) {
+    try {
+      const { error } = await supabase
+        .from('payment_transactions')
+        .update({
+          status: status,
+          updated_at: new Date().toISOString()
+        })
+        .eq('transaction_id', transactionId);
+
+      if (error) {
+        console.error('Erreur mise à jour statut transaction:', error);
+      }
+    } catch (error) {
+      console.error('Erreur mise à jour statut transaction:', error);
+    }
+  }
+
+  // Log des remboursements
+  async logRefund(refundData) {
+    try {
+      const { error } = await supabase
+        .from('payment_refunds')
+        .insert({
+          ...refundData,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        });
+
+      if (error) {
+        console.error('Erreur log remboursement:', error);
+      }
+    } catch (error) {
+      console.error('Erreur log remboursement:', error);
+    }
+  }
+
+  // Vérification de la santé du service
+  async healthCheck() {
+    try {
+      const response = await this.client.get('/accounts/balance', {
+        timeout: 10000
+      });
+
+      return {
+        status: 'healthy',
+        service: 'fedapay',
+        balance: response.data.balance,
+        timestamp: new Date().toISOString()
+      };
+    } catch (error) {
+      log.error('Health check FedaPay échoué:', error);
+      return {
+        status: 'unhealthy',
+        service: 'fedapay',
+        error: error.message,
+        timestamp: new Date().toISOString()
+      };
     }
   }
 }
 
-export default new FedaPayService();
+export const fedapayService = new FedapayService();

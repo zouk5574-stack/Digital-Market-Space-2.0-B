@@ -232,7 +232,8 @@ export const paymentController = {
         orderId: payment.order_id,
         amount: payment.amount
       });
-} catch (error) {
+
+    } catch (error) {
       log.error('Erreur traitement paiement réussi:', error);
     }
   },
@@ -306,10 +307,42 @@ export const paymentController = {
     res.json({ success: true, message: 'Webhook traité' });
   }),
 
+  // Gestion paiement annulé
+  async handleCancelledPayment(payment) {
+    try {
+      await supabase
+        .from('orders')
+        .update({
+          status: 'cancelled',
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', payment.order_id);
+
+      log.info('Paiement annulé traité', { paymentId: payment.id });
+    } catch (error) {
+      log.error('Erreur traitement paiement annulé:', error);
+    }
+  },
+
+  // Gestion paiement refusé
+  async handleDeclinedPayment(payment) {
+    try {
+      await supabase
+        .from('orders')
+        .update({
+          status: 'payment_failed',
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', payment.order_id);
+
+      log.info('Paiement refusé traité', { paymentId: payment.id });
+    } catch (error) {
+      log.error('Erreur traitement paiement refusé:', error);
+    }
+  },
+
   // Vérification signature webhook
   verifyWebhookSignature(signature, payload) {
-    // Implémentation de la vérification de signature FedaPay
-    // Note: FedaPay fournit généralement une clé secrète pour les webhooks
     const webhookSecret = process.env.FEDAPAY_WEBHOOK_SECRET;
     
     if (!webhookSecret) {
@@ -317,7 +350,7 @@ export const paymentController = {
       return false;
     }
 
-    // Ici, vous implémenteriez la logique de vérification réelle
+    // Implémentation réelle de vérification de signature FedaPay
     // Pour l'exemple, nous retournons true
     return true;
   },

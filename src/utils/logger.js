@@ -1,38 +1,93 @@
-const { supabase } = require('../config/supabase');
+import winston from 'winston';
 
-exports.logAction = async (userId, action, metadata = {}) => {
-  try {
-    const { error } = await supabase
-      .from('admin_logs')
-      .insert({
-        user_id: userId,
-        action: action,
-        metadata: metadata,
-        ip_address: metadata.ip_address || null,
-        user_agent: metadata.user_agent || null
-      });
+// Configuration des niveaux de log
+const levels = {
+  error: 0,
+  warn: 1,
+  info: 2,
+  http: 3,
+  debug: 4
+};
 
-    if (error) {
-      console.error('Logging error:', error);
-    }
-  } catch (error) {
-    console.error('Logging system error:', error);
+// Configuration du format
+const format = winston.format.combine(
+  winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss:ms' }),
+  winston.format.errors({ stack: true }),
+  winston.format.json()
+);
+
+// Transports (sorties)
+const transports = [
+  new winston.transports.File({
+    filename: 'logs/error.log',
+    level: 'error',
+    handleExceptions: true,
+    maxsize: 5242880, // 5MB
+    maxFiles: 5
+  }),
+  new winston.transports.File({
+    filename: 'logs/combined.log',
+    handleExceptions: true,
+    maxsize: 5242880, // 5MB
+    maxFiles: 5
+  })
+];
+
+// Transport console en développement
+if (process.env.NODE_ENV !== 'production') {
+  transports.push(
+    new winston.transports.Console({
+      format: winston.format.combine(
+        winston.format.colorize(),
+        winston.format.simple()
+      )
+    })
+  );
+}
+
+// Création du logger
+export const log = winston.createLogger({
+  level: process.env.LOG_LEVEL || 'info',
+  levels,
+  format,
+  transports,
+  exitOnError: false
+});
+
+// Stream pour Morgan (logging HTTP)
+export const stream = {
+  write: (message) => {
+    log.http(message.trim());
   }
 };
 
-exports.getUserLogs = async (userId, limit = 50) => {
-  try {
-    const { data, error } = await supabase
-      .from('admin_logs')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .limit(limit);
+// Méthodes helper
+export const logRequest = (req, res, next) => {
+  log.info('Requête entrante', {
+    method: req.method,
+    url: req.originalUrl,
+    ip: req.ip,
+    userAgent: req.get('User-Agent'),
+    userId: req.user?.id
+  });
+  next();
+};
 
-    if (error) throw error;
-    return data;
-  } catch (error) {
-    console.error('Get user logs error:', error);
-    return [];
-  }
+export const logResponse = (req, res, next) => {
+  const oldSend = res.send;
+  
+  res.send = function(data) {
+    log.info('Réponse sortante', {
+      method: req.method,
+      url: req.originalUrl,
+      statusCode: res.statusCode,
+      userId: req.user?.id,
+      responseTime: `${Date.now() - req.startTime}ms`
+    });
+    
+    res.send = oldSend;
+    return res.send(data);
+  };
+  
+  next();
 };

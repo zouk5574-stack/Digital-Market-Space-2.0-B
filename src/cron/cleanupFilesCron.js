@@ -1,75 +1,92 @@
-// =========================================================
-// cron/cleanupFilesCron.js (VERSION FINALE ET OPTIMISÉE)
-// =========================================================
-import { CronJob } from 'cron';
-import { supabase } from '../src/server.js'; 
-import dayjs from 'dayjs'; 
+const cron = require('node-cron');
+const fileService = require('../services/fileService');
+const logger = require('../utils/logger');
+const constants = require('../utils/constants');
 
-// Récupération des variables d'environnement
-// 🚨 Rétention agressive (par défaut 14 jours pour survie plan gratuit)
-const FILE_RETENTION_DAYS = Number(process.env.FILE_RETENTION_DAYS || 14); 
-const BUCKET = process.env.SUPABASE_FILES_BUCKET || "product-files";
+class CleanupFilesCron {
+  constructor() {
+    this.init();
+  }
 
-const cleanupFiles = async () => {
-    console.log(`[CLEANUP CRON] Démarrage du nettoyage. Rétention: ${FILE_RETENTION_DAYS} jours.`);
+  init() {
+    // Exécuter tous les jours à 2h du matin
+    cron.schedule(constants.CRON_SCHEDULES.CLEANUP_FILES, async () => {
+      await this.cleanupOrphanedFiles();
+    });
 
+    logger.info('✅ Cron de nettoyage des fichiers configuré');
+  }
+
+  async cleanupOrphanedFiles() {
+    const jobId = `cleanup_files_${Date.now()}`;
+    
     try {
-        // 1. Calculer la date limite (aujourd'hui moins la période de rétention)
-        const dateLimit = dayjs().subtract(FILE_RETENTION_DAYS, 'day').toISOString();
-        
-        // 2. Sélectionner les chemins de stockage à supprimer
-        // Nous utilisons .lt ('less than') pour cibler les fichiers créés AVANT la date limite.
-        const { data: filesToDelete, error: selectError } = await supabase
-            .from('product_files')
-            .select('id, storage_path')
-            .lt('created_at', dateLimit); 
-            // ⚠️ Pas besoin de limite ici si nous traitons la suppression par lot ci-dessous
+      logger.info(`🚀 Début du nettoyage des fichiers orphelins: ${jobId}`);
 
-        if (selectError) throw selectError;
+      const result = await fileService.cleanupOrphanedFiles();
 
-        if (!filesToDelete || filesToDelete.length === 0) {
-            console.log("[CLEANUP CRON] Aucuns fichiers à purger trouvés.");
-            return;
-        }
+      logger.info(`✅ Nettoyage fichiers orphelins terminé: ${jobId}`, {
+        deletedCount: result.deletedCount,
+        errorCount: result.errorCount,
+        totalScanned: result.totalScanned
+      });
 
-        const storagePaths = filesToDelete.map(f => f.storage_path);
-        const fileIds = filesToDelete.map(f => f.id);
-
-        console.log(`[CLEANUP CRON] Tentative de suppression de ${fileIds.length} fichiers (Storage + Metadata).`);
-
-        // 3. Supprimer les fichiers de Supabase Storage (Par LOT)
-        // La méthode .remove() gère la suppression par lots jusqu'à 1000 chemins
-        const { error: storageError } = await supabase.storage
-            .from(BUCKET)
-            .remove(storagePaths);
-
-        if (storageError) {
-            console.error("[CLEANUP CRON] Erreur lors de la suppression du stockage, continuant la suppression des métadonnées:", storageError);
-            // On continue pour supprimer la métadonnée même si le fichier est manquant dans le stockage
-        }
-
-        // 4. Supprimer les métadonnées de la table 'product_files' (Par LOT)
-        const { error: deleteMetaError } = await supabase
-            .from('product_files')
-            .delete()
-            .in('id', fileIds);
-
-        if (deleteMetaError) {
-            console.error("[CLEANUP CRON] Erreur lors de la suppression des métadonnées:", deleteMetaError);
-            throw deleteMetaError;
-        }
-
-        console.log(`[CLEANUP CRON] ✅ ${fileIds.length} fichiers purgés avec succès.`);
-
-    } catch (err) {
-        console.error("[CLEANUP CRON] Erreur FATALE lors du processus de nettoyage:", err.message);
+    } catch (error) {
+      logger.error(`❌ Échec nettoyage fichiers orphelins: ${jobId}`, {
+        error: error.message,
+        stack: error.stack
+      });
     }
-};
+  }
 
-// Exécution tous les jours à 3h30 du matin (heure du serveur, Europe/Paris)
-const cleanupJob = new CronJob('30 3 * * *', cleanupFiles, null, true, 'Europe/Paris');
+  async cleanupTempFiles() {
+    const jobId = `cleanup_temp_${Date.now()}`;
+    
+    try {
+      logger.info(`🧹 Début nettoyage fichiers temporaires: ${jobId}`);
 
-export const startCleanupFilesCron = () => {
-    cleanupJob.start();
-    console.log("[CRON] Nettoyage des fichiers planifié : Daily 3:30am (Europe/Paris).");
-};
+      // Supprimer les fichiers temporaires de plus de 24h
+      const cutoffDate = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+      const { data: tempFiles, error } = await database.client
+        .from('files')
+        .select('id, file_path, created_at')
+        .eq('category', 'temp')
+        .lt('created_at', cutoffDate.toISOString());
+
+      if (error) throw error;
+
+      let deletedCount = 0;
+      let errorCount = 0;
+
+      for (const file of tempFiles) {
+        try {
+          await fileService.deleteFile(file.id, 'system');
+          deletedCount++;
+        } catch (fileError) {
+          errorCount++;
+          logger.error('Erreur suppression fichier temporaire', {
+            fileId: file.id,
+            error: fileError.message
+          });
+        }
+      }
+
+      logger.info(`✅ Nettoyage fichiers temporaires terminé: ${jobId}`, {
+        deletedCount,
+        errorCount,
+        totalScanned: tempFiles.length
+      });
+
+    } catch (error) {
+      logger.error(`❌ Échec nettoyage fichiers temporaires: ${jobId}`, {
+        error: error.message
+      });
+    }
+  }
+}
+
+// Démarrer le cron
+new CleanupFilesCron();
+
+module.exports = CleanupFilesCron;

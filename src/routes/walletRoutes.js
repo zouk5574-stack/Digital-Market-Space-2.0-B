@@ -1,17 +1,24 @@
-// src/routes/walletRoutes.js
-import express from 'express';
-import {
-  getWalletByUserId,
-  createWallet,
-  updateWalletBalance,
-  getWalletTransactions
-} from '../controllers/walletController.js';
-
+const express = require('express');
 const router = express.Router();
+const walletController = require('../controllers/walletController');
+const authMiddleware = require('../middleware/authMiddleware');
 
-router.get('/user/:user_id', getWalletByUserId);
-router.post('/', createWallet);
-router.patch('/:id/balance', updateWalletBalance);
-router.get('/:wallet_id/transactions', getWalletTransactions);
+// Portefeuille utilisateur
+router.get('/',
+  authMiddleware.authenticateToken,
+  walletController.getUserWallet
+);
 
-export default router;
+// Historique des transactions
+router.get('/transactions',
+  authMiddleware.authenticateToken,
+  walletController.getTransactionHistory
+);
+
+// Statistiques portefeuille
+router.get('/stats',
+  authMiddleware.authenticateToken,
+  walletController.getWalletStats
+);
+
+module.exports = router;

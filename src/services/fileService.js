@@ -211,7 +211,7 @@ class FileService {
         });
       }
 
-      // Supprimer de la base de données
+       // Supprimer de la base de données
       await database.safeDelete(this.table, { id: fileId });
 
       logger.info(`Fichier supprimé: ${deleteId}`, {
@@ -315,3 +315,125 @@ class FileService {
           cleanUpdates[key] = updates[key];
         }
       });
+
+      if (Object.keys(cleanUpdates).length === 0) {
+        throw new Error('Aucune métadonnée valide à mettre à jour');
+      }
+
+      cleanUpdates.updated_at = new Date().toISOString();
+
+      const result = await database.safeUpdate(
+        this.table,
+        cleanUpdates,
+        { id: fileId }
+      );
+
+      return Response.success(result, 'Métadonnées mises à jour avec succès');
+
+    } catch (err) {
+      const handledError = Error.handleServiceError(err, 'FileService.updateFileMetadata', {
+        fileId,
+        userId,
+        updates
+      });
+      
+      return Response.error(handledError.message);
+    }
+  }
+
+  // Méthodes helper internes
+  generateS3Key(category, filename) {
+    const timestamp = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    return `${category}/${timestamp}/${filename}`;
+  }
+
+  async cleanupOrphanedFiles() {
+    const cleanupId = `cleanup_${Date.now()}`;
+    
+    try {
+      logger.info(`Nettoyage fichiers orphelins: ${cleanupId}`);
+
+      // Trouver les fichiers qui ne sont référencés par aucune mission, produit, etc.
+      const orphanedFiles = await database.client
+        .from(this.table)
+        .select('id, file_path, created_at')
+        .lt('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()) // Plus vieux que 24h
+        .is('mission_id', null)
+        .is('product_id', null)
+        .is('order_id', null);
+
+      let deletedCount = 0;
+      let errorCount = 0;
+
+      for (const file of orphanedFiles.data) {
+        try {
+          await this.deleteFile(file.id, 'system');
+          deletedCount++;
+        } catch (error) {
+          errorCount++;
+          logger.error('Erreur suppression fichier orphelin', {
+            fileId: file.id,
+            error: error.message
+          });
+        }
+      }
+
+      logger.info(`Nettoyage fichiers orphelins terminé: ${cleanupId}`, {
+        deletedCount,
+        errorCount,
+        totalScanned: orphanedFiles.data.length
+      });
+
+      return {
+        success: true,
+        deletedCount,
+        errorCount,
+        totalScanned: orphanedFiles.data.length
+      };
+
+    } catch (err) {
+      const handledError = Error.handleServiceError(err, 'FileService.cleanupOrphanedFiles', {
+        cleanupId
+      });
+      
+      logger.error(`Échec nettoyage fichiers: ${cleanupId}`, {
+        error: handledError.message
+      });
+      
+      throw handledError;
+    }
+  }
+
+  async getFileStats(userId) {
+    try {
+      const stats = await database.client
+        .from(this.table)
+        .select('mime_type, file_size', { count: 'exact' })
+        .eq('user_id', userId);
+
+      if (stats.error) throw stats.error;
+
+      const totalSize = stats.data.reduce((sum, file) => sum + file.file_size, 0);
+      const fileCount = stats.count;
+      const fileTypes = {};
+
+      stats.data.forEach(file => {
+        const category = File.getMimeCategory(file.mime_type);
+        fileTypes[category] = (fileTypes[category] || 0) + 1;
+      });
+
+      return Response.success({
+        total_files: fileCount,
+        total_size: totalSize,
+        formatted_size: File.formatFileSize(totalSize),
+        file_types: fileTypes
+      }, 'Statistiques fichiers récupérées');
+
+    } catch (err) {
+      const handledError = Error.handleServiceError(err, 'FileService.getFileStats', { userId });
+      return Response.error(handledError.message);
+    }
+  }
+}
+
+module.exports = new FileService();

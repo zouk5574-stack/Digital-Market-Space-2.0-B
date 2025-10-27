@@ -1,23 +1,34 @@
-// src/routes/logRoutes.js
-
-import express from "express";
-// ➡️ COHÉRENCE : Utiliser les noms de middlewares définis
-import { authenticateJWT } from "../middleware/authMiddleware.js";
-import { requireRole } from "../middleware/roleMiddleware.js"; 
-import { getLogs } from "../controllers/logController.js";
-
+const express = require('express');
 const router = express.Router();
+const logController = require('../controllers/logController');
+const authMiddleware = require('../middleware/authMiddleware');
 
-/**
- * 👉 GET /api/logs/
- * Rôle: ADMIN (ou SUPER_ADMIN) uniquement.
- * Fonction : Récupérer les logs système ou d'activité pour la surveillance.
- */
-router.get(
-    "/", 
-    authenticateJWT, 
-    requireRole(["ADMIN", "SUPER_ADMIN"]), // ⬅️ SÉCURITÉ CRITIQUE : Seuls les Admins peuvent voir les logs
-    getLogs
+// Logs système (admin seulement)
+router.get('/system',
+  authMiddleware.authenticateToken,
+  authMiddleware.requireRole([1]),
+  logController.getSystemLogs
 );
 
-export default router;
+// Logs audit (admin seulement)
+router.get('/audit',
+  authMiddleware.authenticateToken,
+  authMiddleware.requireRole([1]),
+  logController.getAuditLogs
+);
+
+// Logs activité utilisateur (admin seulement)
+router.get('/user/:userId/activity',
+  authMiddleware.authenticateToken,
+  authMiddleware.requireRole([1]),
+  logController.getUserActivityLogs
+);
+
+// Export logs (admin seulement)
+router.get('/export',
+  authMiddleware.authenticateToken,
+  authMiddleware.requireRole([1]),
+  logController.exportLogs
+);
+
+module.exports = router;

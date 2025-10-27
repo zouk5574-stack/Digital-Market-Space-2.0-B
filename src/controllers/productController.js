@@ -1,337 +1,261 @@
-// src/controllers/productController.js
-import { supabase } from '../config/supabase.js';
-import { productSchema, validateRequest, validateUUID } from '../middleware/validation.js';
+import { supabase } from '../config/database.js';
+import { notificationService } from '../services/notificationService.js';
+import { AppError, asyncHandler } from '../middleware/errorHandler.js';
+import { log } from '../utils/logger.js';
 
-// GET all products with pagination, filters and relations
-export const getProducts = async (req, res) => {
-  try {
-    const { 
-      page = 1, 
-      limit = 12, 
-      category_id, 
-      shop_id, 
-      min_price, 
-      max_price,
-      search,
-      sort_by = 'created_at',
-      sort_order = 'desc'
-    } = req.query;
+export const productController = {
+  // Achat d'un produit digital
+  purchaseDigitalProduct: asyncHandler(async (req, res) => {
+    const { product_id } = req.params;
+    const buyerId = req.user.id;
 
-    const pageNum = parseInt(page);
-    const limitNum = parseInt(limit);
-    const offset = (pageNum - 1) * limitNum;
-
-    let query = supabase
-      .from('products')
-      .select(`
-        *,
-        categories (*),
-        shops (*, users (*)),
-        product_files (*)
-      `, { count: 'exact' });
-
-    // Apply filters
-    if (category_id) query = query.eq('category_id', category_id);
-    if (shop_id) query = query.eq('shop_id', shop_id);
-    if (min_price) query = query.gte('price', parseFloat(min_price));
-    if (max_price) query = query.lte('price', parseFloat(max_price));
-    if (search) {
-      query = query.or(`name.ilike.%${search}%,description.ilike.%${search}%`);
-    }
-
-    // Only active products
-    query = query.eq('is_active', true);
-
-    // Sorting
-    query = query.order(sort_by, { ascending: sort_order === 'asc' });
-
-    const { data, error, count } = await query.range(offset, offset + limitNum - 1);
-
-    if (error) {
-      console.error('Error fetching products:', error);
-      return res.status(500).json({ 
-        success: false, 
-        error: 'Failed to fetch products' 
-      });
-    }
-
-    res.json({
-      success: true,
-      data: data || [],
-      pagination: {
-        page: pageNum,
-        limit: limitNum,
-        total: count || 0,
-        totalPages: Math.ceil((count || 0) / limitNum)
-      }
-    });
-
-  } catch (error) {
-    console.error('Server error in getProducts:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Internal server error' 
-    });
-  }
-};
-
-// GET product by ID with complete relations
-export const getProductById = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const { data, error } = await supabase
-      .from('products')
-      .select(`
-        *,
-        categories (*),
-        shops (*, users (*)),
-        product_files (*)
-      `)
-      .eq('id', id)
+    // Vérification du produit
+    const { data: product, error: productError } = await supabase
+      .from('digital_products')
+      .select('*')
+      .eq('id', product_id)
       .single();
 
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return res.status(404).json({ 
-          success: false, 
-          error: 'Product not found' 
-        });
-      }
-      console.error('Error fetching product:', error);
-      return res.status(500).json({ 
-        success: false, 
-        error: 'Failed to fetch product' 
-      });
+    if (productError || !product) {
+      throw new AppError('Produit non trouvé', 404);
     }
 
-    if (!data) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Product not found' 
+    // Vérification que le produit est disponible
+    if (product.status !== 'active') {
+      throw new AppError('Ce produit n\'est pas disponible à l\'achat', 400);
+    }
+
+    // Vérification que l'acheteur n'est pas le vendeur
+    if (product.seller_id === buyerId) {
+      throw new AppError('Vous ne pouvez pas acheter votre propre produit', 400);
+    }
+
+    // Vérification s'il y a déjà un achat en cours ou réussi
+    const { data: existingPurchase, error: purchaseError } = await supabase
+      .from('product_purchases')
+      .select('id, status')
+      .eq('product_id', product_id)
+      .eq('buyer_id', buyerId)
+      .in('status', ['pending', 'paid', 'completed'])
+      .single();
+
+    if (existingPurchase && !purchaseError) {
+      if (existingPurchase.status === 'completed') {
+        throw new AppError('Vous avez déjà acheté ce produit', 409);
+      }
+      throw new AppError('Un achat est déjà en cours pour ce produit', 409);
+    }
+
+    // Création de l'achat
+    const { data: purchase, error: createError } = await supabase
+      .from('product_purchases')
+      .insert({
+        product_id: product_id,
+        buyer_id: buyerId,
+        seller_id: product.seller_id,
+        amount: product.price,
+        status: 'pending',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .select(`
+        *,
+        product:digital_products(*),
+        buyer:users(id, first_name, last_name, email),
+        seller:users(id, first_name, last_name, email)
+      `)
+      .single();
+
+    if (createError) {
+      log.error('Erreur création achat produit:', createError);
+      throw new AppError('Erreur lors de la création de l\'achat', 500);
+    }
+
+    log.info('Achat produit digital créé - Paiement requis', {
+      purchaseId: purchase.id,
+      productId: product_id,
+      buyerId: buyerId,
+      sellerId: product.seller_id,
+      amount: product.price
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Achat créé avec succès. Veuillez procéder au paiement pour accéder au produit.',
+      data: {
+        purchase: purchase,
+        payment_required: true,
+        next_step: 'initialize_payment'
+      }
+    });
+  }),
+
+  // Accès au produit digital après paiement
+  accessDigitalProduct: asyncHandler(async (req, res) => {
+    const { product_id } = req.params;
+    const userId = req.user.id;
+
+    // Vérification de l'achat
+    const { data: purchase, error: purchaseError } = await supabase
+      .from('product_purchases')
+      .select(`
+        *,
+        product:digital_products(*)
+      `)
+      .eq('product_id', product_id)
+      .eq('buyer_id', userId)
+      .eq('status', 'completed')
+      .single();
+
+    if (purchaseError || !purchase) {
+      throw new AppError('Achat non trouvé ou produit non payé', 404);
+    }
+
+    // Vérification que le produit est toujours actif
+    if (purchase.product.status !== 'active') {
+      throw new AppError('Ce produit n\'est plus disponible', 410);
+    }
+
+    // Enregistrement de l'accès
+    await supabase
+      .from('product_access_logs')
+      .insert({
+        product_id: product_id,
+        user_id: userId,
+        purchase_id: purchase.id,
+        accessed_at: new Date().toISOString()
       });
+
+    log.info('Accès au produit digital', {
+      productId: product_id,
+      userId: userId,
+      purchaseId: purchase.id
+    });
+
+    res.json({
+      success: true,
+      data: {
+        product: {
+          id: purchase.product.id,
+          title: purchase.product.title,
+          description: purchase.product.description,
+          files: purchase.product.files,
+          download_url: purchase.product.download_url,
+          access_expires_at: purchase.product.access_expires_at
+        },
+        purchase: {
+          id: purchase.id,
+          purchased_at: purchase.created_at,
+          amount: purchase.amount
+        }
+      }
+    });
+  }),
+
+  // Historique des achats de produits digitaux
+  getPurchaseHistory: asyncHandler(async (req, res) => {
+    const userId = req.user.id;
+    const { page = 1, limit = 10 } = req.query;
+
+    const offset = (page - 1) * limit;
+
+    const { data: purchases, error, count } = await supabase
+      .from('product_purchases')
+      .select(`
+        *,
+        product:digital_products(
+          id,
+          title,
+          description,
+          category,
+          thumbnail_url
+        ),
+        seller:users(id, first_name, last_name, username, rating)
+      `, { count: 'exact' })
+      .eq('buyer_id', userId)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (error) {
+      log.error('Erreur récupération historique achats:', error);
+      throw new AppError('Erreur lors de la récupération de l\'historique', 500);
     }
 
     res.json({
       success: true,
-      data
+      data: {
+        purchases: purchases || [],
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total: count || 0,
+          totalPages: Math.ceil((count || 0) / limit)
+        }
+      }
+    });
+  }),
+
+  // Téléchargement du fichier produit
+  downloadProductFile: asyncHandler(async (req, res) => {
+    const { product_id, file_id } = req.params;
+    const userId = req.user.id;
+
+    // Vérification des droits d'accès
+    const { data: purchase, error: purchaseError } = await supabase
+      .from('product_purchases')
+      .select('id, status')
+      .eq('product_id', product_id)
+      .eq('buyer_id', userId)
+      .eq('status', 'completed')
+      .single();
+
+    if (purchaseError || !purchase) {
+      throw new AppError('Accès non autorisé au fichier', 403);
+    }
+
+    // Récupération des informations du fichier
+    const { data: product, error: productError } = await supabase
+      .from('digital_products')
+      .select('files, title')
+      .eq('id', product_id)
+      .single();
+
+    if (productError || !product) {
+      throw new AppError('Produit non trouvé', 404);
+    }
+
+    // Recherche du fichier spécifique
+    const file = product.files?.find(f => f.id === file_id);
+    if (!file) {
+      throw new AppError('Fichier non trouvé', 404);
+    }
+
+    // Log du téléchargement
+    await supabase
+      .from('product_download_logs')
+      .insert({
+        product_id: product_id,
+        user_id: userId,
+        file_id: file_id,
+        file_name: file.name,
+        downloaded_at: new Date().toISOString()
+      });
+
+    log.info('Téléchargement fichier produit', {
+      productId: product_id,
+      fileId: file_id,
+      userId: userId,
+      fileName: file.name
     });
 
-  } catch (error) {
-    console.error('Server error in getProductById:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Internal server error' 
+    res.json({
+      success: true,
+      data: {
+        download_url: file.url,
+        file_name: file.name,
+        file_size: file.size,
+        expires_in: '24 hours' // Lien temporaire
+      }
     });
-  }
+  })
 };
-
-// CREATE new product with validation
-export const createProduct = [
-  validateRequest(productSchema),
-  async (req, res) => {
-    try {
-      const { 
-        name, 
-        price, 
-        description, 
-        category_id, 
-        shop_id, 
-        stock_quantity,
-        is_active,
-        tags 
-      } = req.body;
-
-      // Verify category exists
-      const { data: category, error: categoryError } = await supabase
-        .from('categories')
-        .select('id')
-        .eq('id', category_id)
-        .single();
-
-      if (categoryError || !category) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'Invalid category' 
-        });
-      }
-
-      // Verify shop exists and belongs to user
-      const { data: shop, error: shopError } = await supabase
-        .from('shops')
-        .select('id, user_id')
-        .eq('id', shop_id)
-        .single();
-
-      if (shopError || !shop) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'Invalid shop' 
-        });
-      }
-
-      const { data, error } = await supabase
-        .from('products')
-        .insert([{
-          name,
-          price: parseFloat(price),
-          description: description || '',
-          category_id,
-          shop_id,
-          stock_quantity: parseInt(stock_quantity) || 0,
-          is_active: is_active !== false,
-          tags: tags || [],
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        }])
-        .select(`
-          *,
-          categories (*),
-          shops (*)
-        `);
-
-      if (error) {
-        console.error('Error creating product:', error);
-        return res.status(500).json({ 
-          success: false, 
-          error: 'Failed to create product' 
-        });
-      }
-
-      res.status(201).json({
-        success: true,
-        message: 'Product created successfully',
-        data: data[0]
-      });
-
-    } catch (error) {
-      console.error('Server error in createProduct:', error);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Internal server error' 
-      });
-    }
-  }
-];
-
-// UPDATE product
-export const updateProduct = [
-  validateUUID('id'),
-  validateRequest(productSchema),
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-      const { 
-        name, 
-        price, 
-        description, 
-        category_id, 
-        shop_id, 
-        stock_quantity,
-        is_active,
-        tags 
-      } = req.body;
-
-      // Check if product exists
-      const { data: existingProduct, error: checkError } = await supabase
-        .from('products')
-        .select('id')
-        .eq('id', id)
-        .single();
-
-      if (checkError || !existingProduct) {
-        return res.status(404).json({ 
-          success: false, 
-          error: 'Product not found' 
-        });
-      }
-
-      const { data, error } = await supabase
-        .from('products')
-        .update({
-          name,
-          price: parseFloat(price),
-          description: description || '',
-          category_id,
-          shop_id,
-          stock_quantity: parseInt(stock_quantity) || 0,
-          is_active: is_active !== false,
-          tags: tags || [],
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', id)
-        .select(`
-          *,
-          categories (*),
-          shops (*)
-        `);
-
-      if (error) {
-        console.error('Error updating product:', error);
-        return res.status(500).json({ 
-          success: false, 
-          error: 'Failed to update product' 
-        });
-      }
-
-      res.json({
-        success: true,
-        message: 'Product updated successfully',
-        data: data[0]
-      });
-
-    } catch (error) {
-      console.error('Server error in updateProduct:', error);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Internal server error' 
-      });
-    }
-  }
-];
-
-// DELETE product (soft delete)
-export const deleteProduct = [
-  validateUUID('id'),
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-
-      const { data, error } = await supabase
-        .from('products')
-        .update({ 
-          is_active: false,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', id)
-        .select();
-
-      if (error) {
-        console.error('Error deleting product:', error);
-        return res.status(500).json({ 
-          success: false, 
-          error: 'Failed to delete product' 
-        });
-      }
-
-      if (!data || data.length === 0) {
-        return res.status(404).json({ 
-          success: false, 
-          error: 'Product not found' 
-        });
-      }
-
-      res.json({
-        success: true,
-        message: 'Product deleted successfully'
-      });
-
-    } catch (error) {
-      console.error('Server error in deleteProduct:', error);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Internal server error' 
-      });
-    }
-  }
-];

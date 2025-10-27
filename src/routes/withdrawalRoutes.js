@@ -1,13 +1,30 @@
-// src/routes/withdrawalRoutes.js
-import express from 'express';
-import {
-  createWithdrawal,
-  updateWithdrawalStatus
-} from '../controllers/withdrawalController.js';
-
+const express = require('express');
 const router = express.Router();
+const withdrawalController = require('../controllers/withdrawalController');
+const authMiddleware = require('../middleware/authMiddleware');
 
-router.post('/', createWithdrawal);
-router.patch('/:id/status', updateWithdrawalStatus);
+// Demandes de retrait
+router.post('/',
+  authMiddleware.authenticateToken,
+  withdrawalController.createWithdrawal
+);
 
-export default router;
+// Historique des retraits
+router.get('/',
+  authMiddleware.authenticateToken,
+  withdrawalController.getUserWithdrawals
+);
+
+// Annulation de retrait
+router.delete('/:withdrawalId',
+  authMiddleware.authenticateToken,
+  withdrawalController.cancelWithdrawal
+);
+
+// Statistiques retraits
+router.get('/stats',
+  authMiddleware.authenticateToken,
+  withdrawalController.getWithdrawalStats
+);
+
+module.exports = router;

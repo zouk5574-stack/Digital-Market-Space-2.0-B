@@ -1,309 +1,282 @@
-// src/controllers/orderController.js
-import { supabase } from '../config/supabase.js';
-import { orderSchema, validateRequest, validateUUID } from '../middleware/validation.js';
+import { supabase } from '../config/database.js';
+import { notificationService } from '../services/notificationService.js';
+import { AppError, asyncHandler } from '../middleware/errorHandler.js';
+import { log } from '../utils/logger.js';
 
-// GET all orders with pagination and filters
-export const getOrders = async (req, res) => {
-  try {
-    const { 
-      page = 1, 
-      limit = 10, 
-      user_id, 
-      status, 
-      start_date, 
-      end_date,
-      sort_by = 'created_at',
-      sort_order = 'desc'
-    } = req.query;
+export const orderController = {
+  // Création d'une commande
+  createOrder: asyncHandler(async (req, res) => {
+    const { mission_id, freelancer_id, amount, description, deadline } = req.body;
+    const buyerId = req.user.id;
 
-    const pageNum = parseInt(page);
-    const limitNum = parseInt(limit);
-    const offset = (pageNum - 1) * limitNum;
-
-    let query = supabase
-      .from('orders')
-      .select(`
-        *,
-        order_items (*, products (*, categories (*), shops (*))),
-        users (*),
-        transactions (*)
-      `, { count: 'exact' });
-
-    // Apply filters
-    if (user_id) query = query.eq('user_id', user_id);
-    if (status) query = query.eq('status', status);
-    if (start_date) query = query.gte('created_at', start_date);
-    if (end_date) query = query.lte('created_at', end_date);
-
-    // Sorting
-    query = query.order(sort_by, { ascending: sort_order === 'asc' });
-
-    const { data, error, count } = await query.range(offset, offset + limitNum - 1);
-
-    if (error) {
-      console.error('Error fetching orders:', error);
-      return res.status(500).json({ 
-        success: false, 
-        error: 'Failed to fetch orders' 
-      });
+    // Validation des données
+    if (!mission_id || !freelancer_id || !amount) {
+      throw new AppError('Mission ID, Freelancer ID et montant requis', 400);
     }
 
-    res.json({
-      success: true,
-      data: data || [],
-      pagination: {
-        page: pageNum,
-        limit: limitNum,
-        total: count || 0,
-        totalPages: Math.ceil((count || 0) / limitNum)
-      }
-    });
+    if (amount < 100) {
+      throw new AppError('Le montant minimum est de 100 FCFA', 400);
+    }
 
-  } catch (error) {
-    console.error('Server error in getOrders:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Internal server error' 
-    });
-  }
-};
-
-// GET order by ID with complete relations
-export const getOrderById = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const { data, error } = await supabase
-      .from('orders')
-      .select(`
-        *,
-        order_items (*, products (*, categories (*), shops (*))),
-        users (*),
-        transactions (*)
-      `)
-      .eq('id', id)
+    // Vérification de la mission
+    const { data: mission, error: missionError } = await supabase
+      .from('missions')
+      .select('*')
+      .eq('id', mission_id)
       .single();
 
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return res.status(404).json({ 
-          success: false, 
-          error: 'Order not found' 
-        });
-      }
-      console.error('Error fetching order:', error);
-      return res.status(500).json({ 
-        success: false, 
-        error: 'Failed to fetch order' 
-      });
+    if (missionError || !mission) {
+      throw new AppError('Mission non trouvée', 404);
     }
 
-    if (!data) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Order not found' 
-      });
+    // Vérification que le créateur est bien l'acheteur
+    if (mission.user_id !== buyerId) {
+      throw new AppError('Non autorisé à créer une commande pour cette mission', 403);
     }
+
+    // Vérification du freelancer
+    const { data: freelancer, error: freelancerError } = await supabase
+      .from('users')
+      .select('id, first_name, last_name, email')
+      .eq('id', freelancer_id)
+      .single();
+
+    if (freelancerError || !freelancer) {
+      throw new AppError('Freelancer non trouvé', 404);
+    }
+
+    // Vérification qu'il n'y a pas déjà une commande active pour cette mission
+    const { data: existingOrder, error: existingOrderError } = await supabase
+      .from('orders')
+      .select('id')
+      .eq('mission_id', mission_id)
+      .in('status', ['pending', 'in_progress', 'awaiting_payment'])
+      .single();
+
+    if (existingOrder && !existingOrderError) {
+      throw new AppError('Une commande est déjà en cours pour cette mission', 409);
+    }
+
+    // Création de la commande
+    const { data: order, error: orderError } = await supabase
+      .from('orders')
+      .insert({
+        mission_id: mission_id,
+        buyer_id: buyerId,
+        freelancer_id: freelancer_id,
+        amount: amount,
+        description: description || `Commande pour la mission: ${mission.title}`,
+        status: 'pending',
+        deadline: deadline || null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .select(`
+        *,
+        mission:missions(*),
+        buyer:users(id, first_name, last_name, email),
+        freelancer:users(id, first_name, last_name, email)
+      `)
+      .single();
+
+    if (orderError) {
+      log.error('Erreur création commande:', orderError);
+      throw new AppError('Erreur lors de la création de la commande', 500);
+    }
+
+    // Notification au freelancer
+    await notificationService.sendMissionAssignedNotification(freelancer_id, {
+      mission_id: mission_id,
+      order_id: order.id,
+      title: mission.title,
+      budget: amount
+    });
+
+    log.info('Commande créée avec succès', {
+      orderId: order.id,
+      missionId: mission_id,
+      buyerId: buyerId,
+      freelancerId: freelancer_id,
+      amount: amount
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Commande créée avec succès',
+      data: {
+        order: order
+      }
+    });
+  }),
+
+  // Acceptation d'une commande par le freelancer
+  acceptOrder: asyncHandler(async (req, res) => {
+    const { order_id } = req.params;
+    const freelancerId = req.user.id;
+
+    // Vérification de la commande
+    const { data: order, error: orderError } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('id', order_id)
+      .single();
+
+    if (orderError || !order) {
+      throw new AppError('Commande non trouvée', 404);
+    }
+
+    // Vérification que l'utilisateur est bien le freelancer assigné
+    if (order.freelancer_id !== freelancerId) {
+      throw new AppError('Non autorisé à accepter cette commande', 403);
+    }
+
+    // Vérification du statut
+    if (order.status !== 'pending') {
+      throw new AppError('Cette commande ne peut pas être acceptée', 400);
+    }
+
+    // Mise à jour de la commande
+    const { data: updatedOrder, error: updateError } = await supabase
+      .from('orders')
+      .update({
+        status: 'awaiting_payment',
+        accepted_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', order_id)
+      .select(`
+        *,
+        mission:missions(*),
+        buyer:users(id, first_name, last_name, email),
+        freelancer:users(id, first_name, last_name, email)
+      `)
+      .single();
+
+    if (updateError) {
+      log.error('Erreur acceptation commande:', updateError);
+      throw new AppError('Erreur lors de l\'acceptation de la commande', 500);
+    }
+
+    // Notification à l'acheteur
+    await notificationService.sendSystemNotification(
+      order.buyer_id,
+      'Commande Acceptée',
+      `Le freelancer a accepté votre commande pour "${order.mission?.title}". Vous pouvez maintenant procéder au paiement.`,
+      {
+        order_id: order_id,
+        mission_id: order.mission_id,
+        freelancer_name: `${order.freelancer.first_name} ${order.freelancer.last_name}`
+      }
+    );
+
+    log.info('Commande acceptée', {
+      orderId: order_id,
+      freelancerId: freelancerId
+    });
 
     res.json({
       success: true,
-      data
+      message: 'Commande acceptée avec succès',
+      data: {
+        order: updatedOrder
+      }
+    });
+  }),
+
+  // Refus d'une commande par le freelancer
+  rejectOrder: asyncHandler(async (req, res) => {
+    const { order_id } = req.params;
+    const freelancerId = req.user.id;
+
+    // Vérification de la commande
+    const { data: order, error: orderError } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('id', order_id)
+      .single();
+
+    if (orderError || !order) {
+      throw new AppError('Commande non trouvée', 404);
+    }
+
+    if (order.freelancer_id !== freelancerId) {
+      throw new AppError('Non autorisé à refuser cette commande', 403);
+    }
+
+    if (order.status !== 'pending') {
+      throw new AppError('Cette commande ne peut pas être refusée', 400);
+    }
+
+    // Mise à jour de la commande
+    const { data: updatedOrder, error: updateError } = await supabase
+      .from('orders')
+      .update({
+        status: 'rejected',
+        rejected_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', order_id)
+      .select()
+      .single();
+
+    if (updateError) {
+      log.error('Erreur refus commande:', updateError);
+      throw new AppError('Erreur lors du refus de la commande', 500);
+    }
+
+    // Notification à l'acheteur
+    await notificationService.sendSystemNotification(
+      order.buyer_id,
+      'Commande Refusée',
+      `Le freelancer a refusé votre commande pour "${order.mission?.title}".`,
+      {
+        order_id: order_id,
+        mission_id: order.mission_id
+      }
+    );
+
+    log.info('Commande refusée', {
+      orderId: order_id,
+      freelancerId: freelancerId
     });
 
-  } catch (error) {
-    console.error('Server error in getOrderById:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Internal server error' 
+    res.json({
+      success: true,
+      message: 'Commande refusée avec succès',
+      data: {
+        order: updatedOrder
+      }
     });
-  }
-};
+  }),
 
-// CREATE new order with transaction
-export const createOrder = [
-  validateRequest(orderSchema),
-  async (req, res) => {
-    try {
-      const { user_id, total_amount, status, shipping_address, items } = req.body;
+  // Marquer une commande comme terminée
+  completeOrder: asyncHandler(async (req, res) => {
+    const { order_id } = req.params;
+    const userId = req.user.id;
 
-      // Verify user exists
-      const { data: user, error: userError } = await supabase
-        .from('users')
-        .select('id')
-        .eq('id', user_id)
-        .single();
+    // Vérification de la commande
+    const { data: order, error: orderError } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('id', order_id)
+      .single();
 
-      if (userError || !user) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'Invalid user' 
-        });
-      }
-
-      // Verify products and stock
-      for (const item of items) {
-        const { data: product, error: productError } = await supabase
-          .from('products')
-          .select('id, name, stock_quantity, price, is_active')
-          .eq('id', item.product_id)
-          .single();
-
-        if (productError || !product) {
-          return res.status(400).json({ 
-            success: false, 
-            error: `Product not found: ${item.product_id}` 
-          });
-        }
-
-        if (!product.is_active) {
-          return res.status(400).json({ 
-            success: false, 
-            error: `Product not available: ${product.name}` 
-          });
-        }
-
-        if (product.stock_quantity < item.quantity) {
-          return res.status(400).json({ 
-            success: false, 
-            error: `Insufficient stock for: ${product.name}` 
-          });
-        }
-      }
-
-      // Create order
-      const { data: order, error: orderError } = await supabase
-        .from('orders')
-        .insert([{
-          user_id,
-          total_amount: parseFloat(total_amount),
-          status: status || 'pending',
-          shipping_address: typeof shipping_address === 'string' 
-            ? shipping_address 
-            : JSON.stringify(shipping_address),
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        }])
-        .select()
-        .single();
-
-      if (orderError) throw orderError;
-
-      // Create order items
-      const orderItems = items.map(item => ({
-        order_id: order.id,
-        product_id: item.product_id,
-        quantity: item.quantity,
-        unit_price: item.unit_price,
-        total_price: item.quantity * item.unit_price
-      }));
-
-      const { error: itemsError } = await supabase
-        .from('order_items')
-        .insert(orderItems);
-
-      if (itemsError) throw itemsError;
-
-      // Update product stock
-      for (const item of items) {
-        const { error: stockError } = await supabase
-          .from('products')
-          .update({ 
-            stock_quantity: supabase.sql`stock_quantity - ${item.quantity}`,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', item.product_id);
-
-        if (stockError) throw stockError;
-      }
-
-      // Get complete order with relations
-      const { data: completeOrder, error: fetchError } = await supabase
-        .from('orders')
-        .select(`
-          *,
-          order_items (*, products (*, categories (*), shops (*))),
-          users (*)
-        `)
-        .eq('id', order.id)
-        .single();
-
-      if (fetchError) throw fetchError;
-
-      res.status(201).json({
-        success: true,
-        message: 'Order created successfully',
-        data: completeOrder
-      });
-
-    } catch (error) {
-      console.error('Error creating order:', error);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Failed to create order' 
-      });
+    if (orderError || !order) {
+      throw new AppError('Commande non trouvée', 404);
     }
-  }
-];
 
-// UPDATE order status
-export const updateOrderStatus = [
-  validateUUID('id'),
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-      const { status } = req.body;
-
-      if (!status) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'Status is required' 
-        });
-      }
-
-      const validStatuses = ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled'];
-      if (!validStatuses.includes(status)) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'Invalid status' 
-        });
-      }
-
-      const { data, error } = await supabase
-        .from('orders')
-        .update({ 
-          status, 
-          updated_at: new Date().toISOString() 
-        })
-        .eq('id', id)
-        .select();
-
-      if (error) {
-        console.error('Error updating order status:', error);
-        return res.status(500).json({ 
-          success: false, 
-          error: 'Failed to update order status' 
-        });
-      }
-
-      if (!data || data.length === 0) {
-        return res.status(404).json({ 
-          success: false, 
-          error: 'Order not found' 
-        });
-      }
-
-      res.json({
-        success: true,
-        message: 'Order status updated successfully',
-        data: data[0]
-      });
-
-    } catch (error) {
-      console.error('Server error in updateOrderStatus:', error);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Internal server error' 
-      });
+    // Vérification des permissions (seul le freelancer peut marquer comme terminé)
+    if (order.freelancer_id !== userId) {
+      throw new AppError('Non autorisé à terminer cette commande', 403);
     }
-  }
-];
+
+    // Vérification du statut
+    if (order.status !== 'in_progress') {
+      throw new AppError('Cette commande ne peut pas être marquée comme terminée', 400);
+    }
+
+    // Mise à jour de la commande
+    const { data: updatedOrder, error: updateError } = await supabase
+      .from('orders')
+      .update({
+        status:

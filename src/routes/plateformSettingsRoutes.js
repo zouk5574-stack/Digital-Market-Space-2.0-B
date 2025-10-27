@@ -1,10 +1,18 @@
 import express from 'express';
-import { getSettings, updateSettings } from '../../controllers/platformSettingsController.js';
-import { verifyAdminToken } from '../../middleware/authMiddleware.js';
+import {
+  getPlatformSettings,
+  updatePlatformSettings,
+  getPublicSettings
+} from '../controllers/platformSettingsController.js';
+import { requireAdmin } from '../middleware/auth.js';
 
 const router = express.Router();
 
-router.get('/', verifyAdminToken, getSettings);
-router.put('/', verifyAdminToken, updateSettings);
+// Route publique
+router.get('/public', getPublicSettings);
+
+// Routes admin
+router.get('/', requireAdmin, getPlatformSettings);
+router.put('/', requireAdmin, updatePlatformSettings);
 
 export default router;

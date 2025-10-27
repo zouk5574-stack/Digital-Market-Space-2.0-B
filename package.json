@@ -1,16 +1,22 @@
 {
   "name": "digital-market-space-2.0-backend",
-  "version": "1.0.0",
-  "description": "Backend API pour Digital Market Space (Express + Node.js)",
+  "version": "2.0.0",
+  "description": "Backend robuste pour marketplace digital - Missions freelance & Produits digitaux",
   "type": "module",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "lint": "eslint .",
-    "test": "echo \"No tests specified\" && exit 0",
-    "clean": "rm -rf node_modules dist",
-    "build": "echo 'Build successful, no compilation needed for Node.js backend.'"
+    "prod": "NODE_ENV=production node src/server.js",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write src/",
+    "test": "jest --passWithNoTests",
+    "test:watch": "jest --watch",
+    "clean": "rm -rf node_modules dist logs uploads",
+    "setup": "npm install && npm run lint:fix && npm run format",
+    "docker:build": "docker build -t digital-market-space-backend .",
+    "docker:run": "docker run -p 3000:3000 digital-market-space-backend"
   },
   "dependencies": {
     "express": "^4.18.2",
@@ -24,32 +30,42 @@
     "compression": "^1.7.4",
     "morgan": "^1.10.0",
     "express-async-errors": "^3.1.1",
-    "path": "^0.12.7",
-    "cron": "^3.1.7",
-    "dayjs": "^1.11.11",
     "multer": "^1.4.5-lts.1",
+    "node-cron": "^3.0.3",
+    "joi": "^17.11.0",
+    "winston": "^3.11.0",
+    "@aws-sdk/client-s3": "^3.490.0",
+    "@aws-sdk/s3-request-presigner": "^3.490.0",
+    "uuid": "^9.0.1",
     "fedapay": "^1.0.0",
-    "openai": "^4.52.7",
-    "exceljs": "^4.4.0",
-    "pdfkit": "^0.14.0",
-    "axios": "^1.7.2",
-    "mime-types": "^2.1.35",
-    "sharp": "^0.33.4"
+    "openai": "^4.52.7"
   },
   "devDependencies": {
     "nodemon": "^3.1.0",
     "eslint": "^9.10.0",
-    "prettier": "^3.3.2"
+    "prettier": "^3.3.2",
+    "jest": "^29.7.0",
+    "supertest": "^6.3.4"
   },
   "engines": {
-    "node": ">=18.x"
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
   },
   "keywords": [
-    "express",
-    "backend",
-    "api",
     "marketplace",
-    "fedapay"
+    "freelance",
+    "digital-products",
+    "express",
+    "supabase",
+    "fedapay",
+    "nodejs",
+    "backend",
+    "api"
   ],
-  "license": "MIT"
+  "author": "Digital Market Space Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zouk5574-stack/Digital-Market-Space-2.0-B.git"
+  }
 }

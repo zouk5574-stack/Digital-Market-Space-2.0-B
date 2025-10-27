@@ -1,521 +1,197 @@
-// src/controllers/authController.js
-import { supabase } from '../config/supabase.js';
-import Joi from 'joi';
+import { supabase } from '../config/database.js';
+import { AppError, asyncHandler } from '../middleware/errorHandler.js';
+import { log } from '../utils/logger.js';
 
-// Schémas de validation pour l'authentification
-export const loginSchema = Joi.object({
-  email: Joi.string().email().required().messages({
-    'string.email': 'L\'email doit être une adresse valide',
-    'string.empty': 'L\'email est requis'
-  }),
-  password: Joi.string().min(6).required().messages({
-    'string.min': 'Le mot de passe doit contenir au moins 6 caractères',
-    'string.empty': 'Le mot de passe est requis'
-  })
-});
+export const authController = {
+  // Inscription
+  register: asyncHandler(async (req, res) => {
+    const { email, password, first_name, last_name, phone, username } = req.body;
 
-export const registerSchema = Joi.object({
-  // Informations de connexion
-  email: Joi.string().email().required().messages({
-    'string.email': 'L\'email doit être une adresse valide',
-    'string.empty': 'L\'email est requis'
-  }),
-  password: Joi.string().min(6).required().messages({
-    'string.min': 'Le mot de passe doit contenir au moins 6 caractères',
-    'string.empty': 'Le mot de passe est requis'
-  }),
-  confirm_password: Joi.string().valid(Joi.ref('password')).required().messages({
-    'any.only': 'Les mots de passe ne correspondent pas',
-    'string.empty': 'La confirmation du mot de passe est requise'
-  }),
-
-  // Informations personnelles
-  username: Joi.string().min(3).max(30).pattern(/^[a-zA-Z0-9_]+$/).required().messages({
-    'string.min': 'Le nom d\'utilisateur doit contenir au moins 3 caractères',
-    'string.max': 'Le nom d\'utilisateur ne peut pas dépasser 30 caractères',
-    'string.pattern.base': 'Le nom d\'utilisateur ne peut contenir que des lettres, chiffres et underscores',
-    'string.empty': 'Assurez-vous que ce soit des informations juste car une vérification d\'identité s\'imposeras et tout faux compte sera à bannir définitivement 🚫'
-  }),
-  first_name: Joi.string().max(100).required().messages({
-    'string.max': 'Le prénom ne peut pas dépasser 100 caractères',
-    'string.empty': 'Assurez-vous que ce soit des informations juste car une vérification d\'identité s\'imposeras et tout faux compte sera à bannir définitivement 🚫'
-  }),
-  last_name: Joi.string().max(100).required().messages({
-    'string.max': 'Le nom ne peut pas dépasser 100 caractères',
-    'string.empty': 'Assurez-vous que ce soit des informations juste car une vérification d\'identité s\'imposeras et tout faux compte sera à bannir définitivement 🚫'
-  }),
-
-  // Contact
-  phone: Joi.string().pattern(/^\+?[0-9\s\-\(\)]{10,}$/).required().messages({
-    'string.pattern.base': 'Le numéro de téléphone doit être valide',
-    'string.empty': 'Le numéro de téléphone est requis'
-  }),
-  
-  // Rôle
-  role: Joi.string().valid('buyer', 'seller').required().messages({
-    'any.only': 'Le rôle doit être "acheteur" ou "vendeur"',
-    'string.empty': 'Le rôle est requis'
-  }),
-
-  // Adresse - SEULEMENT LE PAYS
-  country: Joi.string().max(100).required().messages({
-    'string.max': 'Le pays ne peut pas dépasser 100 caractères',
-    'string.empty': 'Le pays est requis'
-  }),
-
-  // Informations supplémentaires pour les vendeurs
-  seller_info: Joi.when('role', {
-    is: 'seller',
-    then: Joi.object({
-      shop_name: Joi.string().max(255).required().messages({
-        'string.max': 'Le nom de la boutique ne peut pas dépasser 255 caractères',
-        'string.empty': 'Le nom de la boutique est requis pour les vendeurs'
-      }),
-      shop_description: Joi.string().max(1000).optional().allow(''),
-      business_type: Joi.string().max(100).required().messages({
-        'string.max': 'Le type d\'entreprise ne peut pas dépasser 100 caractères',
-        'string.empty': 'Le type d\'entreprise est requis pour les vendeurs'
-      })
-    }).required(),
-    otherwise: Joi.optional()
-  }),
-
-  // Consentements
-  accept_terms: Joi.boolean().valid(true).required().messages({
-    'any.only': 'Vous devez accepter les conditions d\'utilisation',
-    'boolean.base': 'L\'acceptation des conditions est requise'
-  }),
-  accept_privacy: Joi.boolean().valid(true).required().messages({
-    'any.only': 'Vous devez accepter la politique de confidentialité',
-    'boolean.base': 'L\'acceptation de la politique de confidentialité est requise'
-  }),
-  newsletter: Joi.boolean().default(false)
-});
-
-export const validateAuthRequest = (schema) => {
-  return (req, res, next) => {
-    const { error, value } = schema.validate(req.body, { 
-      abortEarly: false,
-      stripUnknown: true 
-    });
-    
-    if (error) {
-      const errors = error.details.map(detail => ({
-        field: detail.path.join('.'),
-        message: detail.message,
-        type: detail.type
-      }));
-      return res.status(400).json({ 
-        success: false,
-        error: 'Validation des données échouée', 
-        details: errors 
-      });
+    // Validation des données
+    if (!email || !password || !first_name || !last_name) {
+      throw new AppError('Tous les champs obligatoires doivent être remplis', 400);
     }
-    
-    req.body = value;
-    next();
-  };
-};
 
-// LOGIN utilisateur
-export const login = [
-  validateAuthRequest(loginSchema),
-  async (req, res) => {
-    try {
-      const { email, password } = req.body;
+    if (password.length < 8) {
+      throw new AppError('Le mot de passe doit contenir au moins 8 caractères', 400);
+    }
 
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
+    // Vérification si l'email existe déjà
+    const { data: existingUser } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', email)
+      .single();
 
-      if (error) {
-        console.error('Login error:', error);
-        
-        // Messages d'erreur plus spécifiques
-        let errorMessage = 'Identifiants invalides';
-        if (error.message.includes('Invalid login credentials')) {
-          errorMessage = 'Email ou mot de passe incorrect';
-        } else if (error.message.includes('Email not confirmed')) {
-          errorMessage = 'Veuillez confirmer votre adresse email avant de vous connecter';
-        } else if (error.message.includes('Email rate limit exceeded')) {
-          errorMessage = 'Trop de tentatives de connexion. Veuillez réessayer plus tard.';
-        }
-        
-        return res.status(401).json({ 
-          success: false,
-          error: errorMessage 
-        });
-      }
+    if (existingUser) {
+      throw new AppError('Un utilisateur avec cet email existe déjà', 409);
+    }
 
-      // Récupérer le profil utilisateur depuis public.users avec relations complètes
-      const { data: profile, error: profileError } = await supabase
+    // Vérification du username
+    if (username) {
+      const { data: existingUsername } = await supabase
         .from('users')
-        .select(`
-          *,
-          wallets (*),
-          shops (*),
-          user_payout_accounts (*)
-        `)
-        .eq('id', data.user.id)
+        .select('id')
+        .eq('username', username)
         .single();
 
-      if (profileError) {
-        console.error('Erreur de récupération du profil:', profileError);
-        return res.status(500).json({ 
-          success: false,
-          error: 'Profil utilisateur non trouvé' 
-        });
+      if (existingUsername) {
+        throw new AppError('Ce nom d\'utilisateur est déjà pris', 409);
       }
+    }
 
-      // Vérifier si l'utilisateur est actif
-      if (!profile.is_active) {
-        return res.status(403).json({ 
-          success: false,
-          error: 'Compte suspendu. Veuillez contacter le support.' 
-        });
-      }
-
-      res.json({
-        success: true,
-        message: 'Connexion réussie',
+    // Inscription avec Supabase Auth
+    const { data: authData, error: authError } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
         data: {
-          user: {
-            ...data.user,
-            profile: profile
-          },
-          session: data.session
+          first_name,
+          last_name,
+          username: username || null
         }
-      });
+      }
+    });
 
-    } catch (error) {
-      console.error('Erreur serveur lors de la connexion:', error);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Erreur interne du serveur' 
-      });
+    if (authError) {
+      log.error('Erreur inscription Supabase:', authError);
+      throw new AppError(`Erreur lors de l'inscription: ${authError.message}`, 400);
     }
-  }
-];
 
-// REGISTER utilisateur avec pays seulement
-export const register = [
-  validateAuthRequest(registerSchema),
-  async (req, res) => {
-    try {
-      const { 
-        email, 
-        password, 
-        username, 
-        first_name, 
-        last_name, 
-        phone,
-        role,
-        country, // SEULEMENT LE PAYS
-        seller_info,
-        newsletter
-      } = req.body;
-
-      console.log('Tentative d\'inscription:', { email, username, role, country });
-
-      // Vérifier si l'username ou email existe déjà
-      const { data: existingUser, error: checkError } = await supabase
-        .from('users')
-        .select('id, username, email')
-        .or(`username.ilike.${username},email.ilike.${email}`)
-        .single();
-
-      if (existingUser) {
-        const field = existingUser.username.toLowerCase() === username.toLowerCase() ? 'username' : 'email';
-        return res.status(409).json({ 
-          success: false,
-          error: `${field === 'username' ? 'Le nom d\'utilisateur' : 'L\'email'} est déjà utilisé` 
-        });
-      }
-
-      // Créer l'utilisateur dans l'auth Supabase
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            username,
-            first_name,
-            last_name,
-            phone,
-            role,
-            country, // Stocker le pays dans les métadonnées
-            newsletter: newsletter || false
-          },
-          emailRedirectTo: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/confirm`
-        }
-      });
-
-      if (authError) {
-        console.error('Erreur d\'inscription auth:', authError);
-        
-        let errorMessage = authError.message;
-        if (authError.message.includes('User already registered')) {
-          errorMessage = 'Un compte avec cet email existe déjà';
-        } else if (authError.message.includes('Password should be at least')) {
-          errorMessage = 'Le mot de passe doit contenir au moins 6 caractères';
-        }
-        
-        return res.status(400).json({ 
-          success: false,
-          error: errorMessage 
-        });
-      }
-
-      if (!authData.user) {
-        return res.status(500).json({ 
-          success: false,
-          error: 'Erreur lors de la création du compte' 
-        });
-      }
-
-      // Créer le profil utilisateur dans public.users
-      const userProfileData = {
+    // Création du profil utilisateur dans public.users
+    const { error: profileError } = await supabase
+      .from('users')
+      .insert({
         id: authData.user.id,
-        username,
         email,
         first_name,
         last_name,
-        phone,
-        country, // SEULEMENT LE PAYS
-        role,
-        newsletter: newsletter || false,
-        is_active: true,
-        email_confirmed: false,
+        phone: phone || null,
+        username: username || null,
+        balance: 0,
+        rating: 0,
+        response_rate: 0,
+        completed_missions: 0,
+        completed_orders: 0,
+        role_id: 2, // Rôle utilisateur par défaut
+        profile_data: {},
+        last_active: new Date().toISOString(),
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
-      };
-
-      const { data: profileData, error: profileError } = await supabase
-        .from('users')
-        .insert([userProfileData])
-        .select()
-        .single();
-
-      if (profileError) {
-        console.error('Erreur de création du profil:', profileError);
-        
-        // Rollback: supprimer l'utilisateur auth
-        try {
-          await supabase.auth.admin.deleteUser(authData.user.id);
-        } catch (deleteError) {
-          console.error('Erreur lors de la suppression de l\'utilisateur auth:', deleteError);
-        }
-        
-        return res.status(500).json({ 
-          success: false,
-          error: 'Erreur lors de la création du profil utilisateur' 
-        });
-      }
-
-      // Créer le wallet pour l'utilisateur
-      const { error: walletError } = await supabase
-        .from('wallets')
-        .insert([{
-          user_id: authData.user.id,
-          balance: 0,
-          currency: 'XOF',
-          is_active: true,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        }]);
-
-      if (walletError) {
-        console.error('Erreur de création du wallet:', walletError);
-        // Continuer même si le wallet échoue
-      }
-
-      // Si l'utilisateur est un vendeur, créer sa boutique
-      if (role === 'seller' && seller_info) {
-        const { error: shopError } = await supabase
-          .from('shops')
-          .insert([{
-            user_id: authData.user.id,
-            name: seller_info.shop_name,
-            description: seller_info.shop_description || `Bienvenue dans la boutique de ${username}`,
-            business_type: seller_info.business_type,
-            contact_email: email,
-            contact_phone: phone,
-            country: country, // Utiliser le pays de l'utilisateur
-            is_active: true,
-            verified: false,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          }]);
-
-        if (shopError) {
-          console.error('Erreur de création de la boutique:', shopError);
-          // Continuer même si la boutique échoue
-        }
-      }
-
-      // Préparer la réponse
-      const response = {
-        success: true,
-        message: 'Inscription réussie!',
-        data: {
-          user: {
-            ...authData.user,
-            profile: profileData
-          }
-        }
-      };
-
-      // Ajouter le message de confirmation email si nécessaire
-      if (authData.user?.identities?.length === 0) {
-        response.message = 'Inscription réussie! Veuillez vérifier votre email pour confirmer votre compte.';
-        response.requires_email_confirmation = true;
-      } else if (authData.session) {
-        response.data.session = authData.session;
-      }
-
-      res.status(201).json(response);
-
-    } catch (error) {
-      console.error('Erreur serveur lors de l\'inscription:', error);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Erreur interne du serveur' 
       });
-    }
-  }
-];
 
-// LOGOUT utilisateur
-export const logout = async (req, res) => {
-  try {
-    const { error } = await supabase.auth.signOut();
-
-    if (error) {
-      console.error('Erreur de déconnexion:', error);
-      return res.status(400).json({ 
-        success: false,
-        error: error.message 
-      });
+    if (profileError) {
+      log.error('Erreur création profil utilisateur:', profileError);
+      
+      // Rollback: suppression du compte auth si échec
+      await supabase.auth.admin.deleteUser(authData.user.id);
+      
+      throw new AppError('Erreur lors de la création du profil', 500);
     }
+
+    log.info('Nouvel utilisateur inscrit', { userId: authData.user.id, email });
+
+    res.status(201).json({
+      success: true,
+      message: 'Inscription réussie. Veuillez vérifier votre email.',
+      data: {
+        user: {
+          id: authData.user.id,
+          email: authData.user.email,
+          first_name,
+          last_name,
+          username
+        },
+        session: authData.session
+      }
+    });
+  }),
+
+  // Connexion
+  login: asyncHandler(async (req, res) => {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      throw new AppError('Email et mot de passe requis', 400);
+    }
+
+    // Authentification avec Supabase
+    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+      email,
+      password
+    });
+
+    if (authError) {
+      log.warn('Tentative de connexion échouée', { email, error: authError.message });
+      
+      if (authError.message === 'Invalid login credentials') {
+        throw new AppError('Email ou mot de passe incorrect', 401);
+      }
+      
+      throw new AppError(`Erreur de connexion: ${authError.message}`, 400);
+    }
+
+    // Récupération du profil utilisateur
+    const { data: userProfile, error: profileError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', authData.user.id)
+      .single();
+
+    if (profileError) {
+      log.error('Profil utilisateur non trouvé après connexion:', profileError);
+      throw new AppError('Erreur lors de la récupération du profil', 500);
+    }
+
+    // Mise à jour last_active
+    await supabase
+      .from('users')
+      .update({ 
+        last_active: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', authData.user.id);
+
+    log.info('Utilisateur connecté', { userId: authData.user.id, email });
+
+    res.json({
+      success: true,
+      message: 'Connexion réussie',
+      data: {
+        user: {
+          ...userProfile,
+          auth_metadata: authData.user
+        },
+        session: authData.session
+      }
+    });
+  }),
+
+  // Déconnexion
+  logout: asyncHandler(async (req, res) => {
+    const token = req.headers.authorization?.split(' ')[1];
+    
+    if (token) {
+      const { error } = await supabase.auth.signOut();
+      if (error) {
+        log.error('Erreur déconnexion:', error);
+      }
+    }
+
+    log.info('Utilisateur déconnecté', { userId: req.user?.id });
 
     res.json({
       success: true,
       message: 'Déconnexion réussie'
     });
+  }),
 
-  } catch (error) {
-    console.error('Erreur serveur lors de la déconnexion:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Erreur interne du serveur' 
-    });
-  }
-};
-
-// GET current user profile
-export const getCurrentUser = async (req, res) => {
-  try {
-    const { data: { user }, error } = await supabase.auth.getUser();
-
-    if (error || !user) {
-      return res.status(401).json({ 
-        success: false,
-        error: 'Non authentifié' 
-      });
-    }
-
-    // Construire la query en fonction du rôle
-    let query = supabase
-      .from('users')
-      .select(`
-        *,
-        wallets (*),
-        user_payout_accounts (*)
-      `)
-      .eq('id', user.id);
-
-    // Ajouter les relations spécifiques au rôle
-    const userMetadata = user.user_metadata || {};
-    if (userMetadata.role === 'seller') {
-      query = query.select(`
-        *,
-        wallets (*),
-        user_payout_accounts (*),
-        shops (*, 
-          products (*, 
-            categories (*),
-            product_files (*)
-          )
-        ),
-        freelance_missions!freelance_missions_client_id_fkey (*)
-      `);
-    } else if (userMetadata.role === 'buyer') {
-      query = query.select(`
-        *,
-        wallets (*),
-        user_payout_accounts (*),
-        orders (*, 
-          order_items (*, 
-            products (*,
-              categories (*),
-              shops (*)
-            )
-          )
-        ),
-        freelance_missions!freelance_missions_freelance_id_fkey (
-          *,
-          clients:users!freelance_missions_client_id_fkey (*),
-          categories (*)
-        )
-      `);
-    }
-
-    const { data: profile, error: profileError } = await query.single();
-
-    if (profileError) {
-      console.error('Erreur de récupération du profil:', profileError);
-      return res.status(500).json({ 
-        success: false,
-        error: 'Erreur lors de la récupération du profil' 
-      });
-    }
-
-    // Vérifier si l'utilisateur est actif
-    if (!profile.is_active) {
-      return res.status(403).json({ 
-        success: false,
-        error: 'Compte suspendu' 
-      });
-    }
-
-    res.json({
-      success: true,
-      data: {
-        ...user,
-        profile: profile
-      }
-    });
-
-  } catch (error) {
-    console.error('Erreur serveur lors de la récupération du profil:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Erreur interne du serveur' 
-    });
-  }
-};
-
-// REFRESH token
-export const refreshToken = async (req, res) => {
-  try {
+  // Rafraîchissement du token
+  refreshToken: asyncHandler(async (req, res) => {
     const { refresh_token } = req.body;
 
     if (!refresh_token) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Le refresh token est requis' 
-      });
+      throw new AppError('Refresh token requis', 400);
     }
 
     const { data, error } = await supabase.auth.refreshSession({
@@ -523,29 +199,148 @@ export const refreshToken = async (req, res) => {
     });
 
     if (error) {
-      console.error('Erreur de rafraîchissement du token:', error);
-      return res.status(401).json({ 
-        success: false,
-        error: 'Refresh token invalide ou expiré' 
-      });
+      throw new AppError('Token de rafraîchissement invalide', 401);
     }
 
     res.json({
       success: true,
       message: 'Token rafraîchi avec succès',
       data: {
-        access_token: data.session.access_token,
-        refresh_token: data.session.refresh_token,
-        expires_in: data.session.expires_in,
-        user: data.user
+        session: data.session
       }
     });
+  }),
 
-  } catch (error) {
-    console.error('Erreur serveur lors du rafraîchissement du token:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Erreur interne du serveur' 
+  // Mot de passe oublié
+  forgotPassword: asyncHandler(async (req, res) => {
+    const { email } = req.body;
+
+    if (!email) {
+      throw new AppError('Email requis', 400);
+    }
+
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${process.env.FRONTEND_URL}/reset-password`
     });
-  }
+
+    if (error) {
+      log.error('Erreur réinitialisation mot de passe:', error);
+      throw new AppError('Erreur lors de l\'envoi de l\'email de réinitialisation', 500);
+    }
+
+    log.info('Email réinitialisation mot de passe envoyé', { email });
+
+    res.json({
+      success: true,
+      message: 'Email de réinitialisation envoyé avec succès'
+    });
+  }),
+
+  // Réinitialisation mot de passe
+  resetPassword: asyncHandler(async (req, res) => {
+    const { password, access_token } = req.body;
+
+    if (!password || !access_token) {
+      throw new AppError('Nouveau mot de passe et token requis', 400);
+    }
+
+    if (password.length < 8) {
+      throw new AppError('Le mot de passe doit contenir au moins 8 caractères', 400);
+    }
+
+    const { error } = await supabase.auth.updateUser({
+      password
+    }, {
+      accessToken: access_token
+    });
+
+    if (error) {
+      throw new AppError('Token de réinitialisation invalide ou expiré', 400);
+    }
+
+    log.info('Mot de passe réinitialisé', { token: access_token });
+
+    res.json({
+      success: true,
+      message: 'Mot de passe réinitialisé avec succès'
+    });
+  }),
+
+  // Profil utilisateur
+  getProfile: asyncHandler(async (req, res) => {
+    const user = req.user;
+
+    res.json({
+      success: true,
+      data: {
+        user: {
+          id: user.id,
+          email: user.email,
+          first_name: user.first_name,
+          last_name: user.last_name,
+          username: user.username,
+          phone: user.phone,
+          balance: user.balance,
+          rating: user.rating,
+          response_rate: user.response_rate,
+          completed_missions: user.completed_missions,
+          completed_orders: user.completed_orders,
+          profile_data: user.profile_data,
+          last_active: user.last_active,
+          created_at: user.created_at
+        }
+      }
+    });
+  }),
+
+  // Mise à jour profil
+  updateProfile: asyncHandler(async (req, res) => {
+    const { first_name, last_name, phone, username, profile_data } = req.body;
+    const userId = req.user.id;
+
+    // Vérification username unique
+    if (username && username !== req.user.username) {
+      const { data: existingUser } = await supabase
+        .from('users')
+        .select('id')
+        .eq('username', username)
+        .neq('id', userId)
+        .single();
+
+      if (existingUser) {
+        throw new AppError('Ce nom d\'utilisateur est déjà pris', 409);
+      }
+    }
+
+    const updateData = {
+      ...(first_name && { first_name }),
+      ...(last_name && { last_name }),
+      ...(phone && { phone }),
+      ...(username && { username }),
+      ...(profile_data && { profile_data }),
+      updated_at: new Date().toISOString()
+    };
+
+    const { data: updatedUser, error } = await supabase
+      .from('users')
+      .update(updateData)
+      .eq('id', userId)
+      .select()
+      .single();
+
+    if (error) {
+      log.error('Erreur mise à jour profil:', error);
+      throw new AppError('Erreur lors de la mise à jour du profil', 500);
+    }
+
+    log.info('Profil utilisateur mis à jour', { userId });
+
+    res.json({
+      success: true,
+      message: 'Profil mis à jour avec succès',
+      data: {
+        user: updatedUser
+      }
+    });
+  })
 };

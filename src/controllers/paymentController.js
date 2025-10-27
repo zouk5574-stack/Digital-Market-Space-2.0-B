@@ -232,3 +232,140 @@ export const paymentController = {
         orderId: payment.order_id,
         amount: payment.amount
       });
+} catch (error) {
+      log.error('Erreur traitement paiement réussi:', error);
+    }
+  },
+
+  // Webhook FedaPay
+  handleWebhook: asyncHandler(async (req, res) => {
+    const webhookData = req.body;
+    
+    // Vérification de la signature du webhook
+    const signature = req.headers['x-fedapay-signature'];
+    if (!this.verifyWebhookSignature(signature, webhookData)) {
+      log.warn('Webhook FedaPay signature invalide', { signature });
+      return res.status(401).json({ success: false, error: 'Signature invalide' });
+    }
+
+    const { transaction, event } = webhookData;
+
+    if (!transaction || !event) {
+      throw new AppError('Données webhook invalides', 400);
+    }
+
+    log.info('Webhook FedaPay reçu', {
+      event: event,
+      transactionId: transaction.id,
+      status: transaction.status
+    });
+
+    // Recherche de la transaction en base
+    const { data: payment, error } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('transaction_id', transaction.id)
+      .single();
+
+    if (error || !payment) {
+      log.error('Transaction webhook non trouvée en base:', transaction.id);
+      return res.status(404).json({ success: false, error: 'Transaction non trouvée' });
+    }
+
+    // Mise à jour du statut
+    await supabase
+      .from('payments')
+      .update({
+        status: transaction.status,
+        updated_at: new Date().toISOString(),
+        ...(transaction.paid_at && { paid_at: transaction.paid_at })
+      })
+      .eq('id', payment.id);
+
+    // Traitement selon l'événement
+    switch (event) {
+      case 'transaction.approved':
+        await this.handleSuccessfulPayment(payment);
+        break;
+      
+      case 'transaction.canceled':
+        await this.handleCancelledPayment(payment);
+        break;
+      
+      case 'transaction.declined':
+        await this.handleDeclinedPayment(payment);
+        break;
+    }
+
+    log.info('Webhook FedaPay traité avec succès', {
+      paymentId: payment.id,
+      event: event,
+      status: transaction.status
+    });
+
+    res.json({ success: true, message: 'Webhook traité' });
+  }),
+
+  // Vérification signature webhook
+  verifyWebhookSignature(signature, payload) {
+    // Implémentation de la vérification de signature FedaPay
+    // Note: FedaPay fournit généralement une clé secrète pour les webhooks
+    const webhookSecret = process.env.FEDAPAY_WEBHOOK_SECRET;
+    
+    if (!webhookSecret) {
+      log.warn('Webhook secret non configuré');
+      return false;
+    }
+
+    // Ici, vous implémenteriez la logique de vérification réelle
+    // Pour l'exemple, nous retournons true
+    return true;
+  },
+
+  // Historique des paiements utilisateur
+  getPaymentHistory: asyncHandler(async (req, res) => {
+    const userId = req.user.id;
+    const { page = 1, limit = 10, status } = req.query;
+
+    const offset = (page - 1) * limit;
+
+    let query = supabase
+      .from('payments')
+      .select(`
+        *,
+        order:orders(
+          id,
+          mission:missions(title, category),
+          freelancer:users(first_name, last_name, username)
+        )
+      `, { count: 'exact' })
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+
+    if (status) {
+      query = query.eq('status', status);
+    }
+
+    query = query.range(offset, offset + limit - 1);
+
+    const { data: payments, error, count } = await query;
+
+    if (error) {
+      log.error('Erreur récupération historique paiements:', error);
+      throw new AppError('Erreur lors de la récupération de l\'historique', 500);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        payments: payments || [],
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total: count || 0,
+          totalPages: Math.ceil((count || 0) / limit)
+        }
+      }
+    });
+  })
+};

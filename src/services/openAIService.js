@@ -30,7 +30,7 @@ export class OpenAIService {
       // Préparation du contexte système
       const systemMessage = {
         role: 'system',
-        content: `Vous êtes un assistant IA pour Digital Market Space, une plateforme de freelance.
+        content: `Vous êtes un assistant IA pour Digital Market Space, une plateforme hybride de freelance et de vente de produits digitaux.
         
 Contexte utilisateur:
 - ID: ${userId}

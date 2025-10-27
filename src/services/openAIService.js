@@ -1,139 +1,175 @@
-// src/services/openAIService.js
 import OpenAI from 'openai';
+import { supabase } from '../config/database.js';
+import { AppError } from '../middleware/errorHandler.js';
+import { log } from '../utils/logger.js';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// Initialisation OpenAI avec gestion d'erreur
+let openai;
+try {
+  openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+    timeout: 30000,
+    maxRetries: 3
+  });
+} catch (error) {
+  console.error('Erreur initialisation OpenAI:', error);
+}
 
-// Filtres de contenu selon le rôle
-const contentFilters = {
-  VENDEUR: (response) => {
-    const adminPatterns = [
-      /tableau de bord admin/i,
-      /statistiques .* (globales|tous)/i,
-      /tous les (utilisateurs|vendeurs)/i,
-      /système .* (plateforme|admin)/i,
-      /paramètres (avancés|système)/i,
-      /chiffre d'affaires total/i
-    ];
-    
-    const hasForbiddenContent = adminPatterns.some(pattern => pattern.test(response));
-    return !hasForbiddenContent;
-  },
-  ACHETEUR: (response) => {
-    const adminPatterns = [
-      /interface admin/i,
-      /(vendeurs?|acheteurs?) .* tous/i,
-      /chiffre d'affaires .* total/i,
-      /paramètres .* (système|avancés)/i,
-      /statistiques .* (globales|tous)/i,
-      /backoffice/i
-    ];
-    
-    const hasForbiddenContent = adminPatterns.some(pattern => pattern.test(response));
-    return !hasForbiddenContent;
+export class OpenAIService {
+  constructor() {
+    this.openai = openai;
   }
-};
 
-export const openAIService = {
-  async sendMessage({ message, systemPrompt, conversationHistory, userContext }) {
+  // Génération de réponse IA avec contexte
+  async generateAIResponse(messages, userId, context = {}) {
+    if (!this.openai) {
+      throw new AppError('Service IA non disponible', 503);
+    }
+
     try {
-      const messages = [
-        { role: "system", content: systemPrompt },
-        ...conversationHistory.map(msg => ({
-          role: msg.user_message ? "user" : "assistant",
-          content: msg.user_message || msg.ai_response
-        })),
-        { role: "user", content: message }
-      ];
+      // Préparation du contexte système
+      const systemMessage = {
+        role: 'system',
+        content: `Vous êtes un assistant IA pour Digital Market Space, une plateforme de freelance.
+        
+Contexte utilisateur:
+- ID: ${userId}
+- Rôle: ${context.userRole || 'utilisateur'}
+- Expérience: ${context.completedMissions || 0} missions complétées
 
-      const completion = await openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
-        messages: messages,
-        max_tokens: 800,
-        temperature: 0.7,
-        user: userContext.userId
-      });
+Règles:
+1. Répondez de manière professionnelle et utile
+2. Soyez concis mais complet
+3. Ne donnez pas de conseils financiers ou juridiques
+4. Respectez les guidelines de la plateforme
+5. Aidez avec les missions, commandes, paiements et retraits
 
-      let response = completion.choices[0].message.content;
-      
-      // FILTRAGE FINAL DE LA RÉPONSE (sauf pour admin)
-      if (userContext.userRole !== 'ADMIN') {
-        const filter = contentFilters[userContext.userRole];
-        if (filter && !filter(response)) {
-          response = "Je ne peux pas fournir ces informations spécifiques. Pour toute question technique, veuillez contacter notre équipe de support.";
-        }
-      }
-
-      return {
-        content: response,
-        usage: completion.usage
+Limites:
+- Ne générez pas de code malveillant
+- Ne partagez pas d'informations sensibles
+- Respectez la confidentialité des données`
       };
 
-    } catch (error) {
-      console.error("OpenAI API error:", error);
+      const conversation = [systemMessage, ...messages];
+
+      const completion = await this.openai.chat.completions.create({
+        model: process.env.OPENAI_MODEL || 'gpt-3.5-turbo',
+        messages: conversation,
+        max_tokens: 1000,
+        temperature: 0.7,
+        user: userId // Pour le tracking OpenAI
+      });
+
+      const response = completion.choices[0]?.message?.content;
       
-      if (error.code === 'insufficient_quota' || error.code === 'billing_not_active') {
-        throw new Error("Service IA temporairement indisponible");
+      if (!response) {
+        throw new AppError('Aucune réponse générée par l\'IA', 500);
+      }
+
+      // Log de l'interaction
+      await this.logInteraction(userId, messages, response, context);
+
+      return response;
+    } catch (error) {
+      log.error('Erreur service OpenAI:', error);
+      
+      if (error.code === 'insufficient_quota') {
+        throw new AppError('Service IA temporairement indisponible', 503);
       }
       
-      throw new Error("Erreur de communication avec l'assistant IA");
+      if (error.code === 'rate_limit_exceeded') {
+        throw new AppError('Limite de requêtes IA atteinte', 429);
+      }
+      
+      throw new AppError('Erreur du service IA', 500);
     }
-  },
+  }
 
-  async generateContent(type, parameters, userContext) {
-    const prompts = {
-      product_description: `Génère une description attrayante pour un produit e-commerce:
-      - Produit: ${parameters.productName}
-      - Catégorie: ${parameters.category}
-      - Caractéristiques: ${parameters.features}
-      - Public cible: ${parameters.targetAudience}
-      
-      La description doit être persuasive, SEO-friendly et mettre en valeur les bénéfices.`,
-
-      mission_brief: `Rédige un brief clair pour une mission freelance:
-      - Titre: ${parameters.title}
-      - Domaine: ${parameters.domain}
-      - Budget: ${parameters.budget}
-      - Délai: ${parameters.deadline}
-      - Compétences requises: ${parameters.skills}
-      
-      Le brief doit être précis, professionnel et attractif pour les talents.`,
-
-      shop_description: `Crée une description engageante pour une boutique en ligne:
-      - Nom: ${parameters.shopName}
-      - Spécialité: ${parameters.specialty}
-      - Valeurs: ${parameters.values}
-      - Public: ${parameters.targetCustomers}
-      
-      La description doit refléter l'identité de la boutique.`,
-
-      proposal_template: `Génère un modèle de proposition pour une mission freelance:
-      - Type: ${parameters.missionType}
-      - Compétences: ${parameters.skills}
-      - Expérience: ${parameters.experience}
-      
-      La proposition doit être professionnelle et persuasive.`
-    };
-
-    const prompt = prompts[type];
-    if (!prompt) {
-      throw new Error("Type de contenu non supporté");
+  // Log des interactions IA
+  async logInteraction(userId, inputMessages, output, context = {}) {
+    try {
+      await supabase
+        .from('ai_interactions')
+        .insert({
+          user_id: userId,
+          input_messages: inputMessages,
+          output_message: output,
+          model: process.env.OPENAI_MODEL || 'gpt-3.5-turbo',
+          token_count: output.length / 4, // Estimation
+          context: context,
+          created_at: new Date().toISOString()
+        });
+    } catch (error) {
+      console.error('Erreur log interaction IA:', error);
     }
+  }
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-3.5-turbo",
-      messages: [
-        { 
-          role: "system", 
-          content: "Tu es un expert en rédaction pour plateforme digitale. Génère du contenu professionnel et engageant." 
-        },
-        { role: "user", content: prompt }
-      ],
-      max_tokens: 500,
-      temperature: 0.8
+  // Analyse de mission avec IA
+  async analyzeMission(missionData, userId) {
+    const prompt = `Analysez cette mission freelance et donnez des recommandations:
+
+Titre: ${missionData.title}
+Description: ${missionData.description}
+Budget: ${missionData.budget}
+Catégorie: ${missionData.category}
+Deadline: ${missionData.deadline}
+
+Recommandations demandées:
+1. Évaluation de la difficulté
+2. Conseils pour le budget
+3. Compétences requises
+4. Timeline recommandée
+
+Répondez en format JSON structuré.`;
+
+    const messages = [
+      {
+        role: 'user',
+        content: prompt
+      }
+    ];
+
+    const response = await this.generateAIResponse(messages, userId, {
+      analysisType: 'mission'
     });
 
-    return completion.choices[0].message.content;
+    try {
+      return JSON.parse(response);
+    } catch (error) {
+      return { analysis: response };
+    }
   }
-};
+
+  // Génération de description optimisée
+  async optimizeDescription(originalDescription, missionContext, userId) {
+    const prompt = `Optimisez cette description de mission freelance:
+
+Description originale: "${originalDescription}"
+
+Contexte:
+- Catégorie: ${missionContext.category}
+- Budget: ${missionContext.budget}
+- Public cible: Freelancers professionnels
+
+Améliorations demandées:
+1. Rendre plus engageant
+2. Clarifier les exigences
+3. Mettre en valeur les bénéfices
+4. Structurer avec des points clés
+
+Retournez uniquement la description optimisée.`;
+
+    const messages = [
+      {
+        role: 'user',
+        content: prompt
+      }
+    ];
+
+    return await this.generateAIResponse(messages, userId, {
+      optimizationType: 'description'
+    });
+  }
+}
+
+export const openAIService = new OpenAIService();

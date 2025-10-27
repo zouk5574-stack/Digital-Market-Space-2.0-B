@@ -1,171 +1,273 @@
-// src/controllers/logController.js
-import { supabase } from "../server.js";
+const database = require('../config/database');
+const { Response, Error } = require('../utils/helpers');
+const logger = require('../utils/logger');
 
-const LOG_TABLE = "admin_logs";
+class LogController {
+  
+  async getSystemLogs(req, res) {
+    try {
+      const { 
+        page = 1, 
+        limit = 50, 
+        level, 
+        start_date, 
+        end_date,
+        search 
+      } = req.query;
 
-/**
- * ✅ Ajouter un log (à appeler dans d'autres controllers lors d'actions sensibles)
- * Enregistre l'action effectuée par l'administrateur (ou Super Admin).
- * @param {string} userId - L'ID de l'utilisateur qui effectue l'action (req.user.db.id).
- * @param {string} action - Description courte de l'action (ex: 'USER_BLOCKED').
- * @param {object} details - Détails JSON de l'action (ex: { target_id: '...', old_value: '...' }).
- */
-export async function addLog(userId, action, details = {}) {
-  try {
-    const { error } = await supabase
-      .from(LOG_TABLE)
-      .insert([{
-        admin_id: userId,
+      const offset = (page - 1) * limit;
+      const adminId = req.user.id;
+
+      logger.info('Récupération logs système', { adminId });
+
+      let query = database.client
+        .from('system_logs')
+        .select('*', { count: 'exact' })
+        .order('created_at', { ascending: false });
+
+      // Appliquer les filtres
+      if (level) {
+        query = query.eq('level', level);
+      }
+
+      if (start_date) {
+        query = query.gte('created_at', new Date(start_date).toISOString());
+      }
+
+      if (end_date) {
+        query = query.lte('created_at', new Date(end_date).toISOString());
+      }
+
+      if (search) {
+        query = query.or(`message.ilike.%${search}%,context.ilike.%${search}%`);
+      }
+
+      query = query.range(offset, offset + limit - 1);
+
+      const { data: logs, error, count } = await query;
+
+      if (error) throw error;
+
+      const pagination = {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: count
+      };
+
+      res.json(Response.paginated(logs, pagination, 'Logs système récupérés'));
+
+    } catch (error) {
+      logger.error('Erreur récupération logs système', {
+        adminId: req.user.id,
+        error: error.message
+      });
+
+      res.status(500).json(Response.error('Erreur lors de la récupération des logs'));
+    }
+  }
+
+  async getAuditLogs(req, res) {
+    try {
+      const { 
+        page = 1, 
+        limit = 50, 
         action,
-        details,
-        ip_address: details.ip_address || 'system',
-        user_agent: details.user_agent || 'ai-assistant',
-        created_at: new Date().toISOString()
-      }]);
+        user_id,
+        start_date,
+        end_date 
+      } = req.query;
 
-    if (error) {
-      console.error('Log insertion error:', error);
-      console.log(`AI_LOG: ${action}`, { userId, ...details });
+      const offset = (page - 1) * limit;
+      const adminId = req.user.id;
+
+      logger.info('Récupération logs audit', { adminId });
+
+      let query = database.client
+        .from('audit_logs')
+        .select('*', { count: 'exact' })
+        .order('created_at', { ascending: false });
+
+      if (action) {
+        query = query.eq('action', action);
+      }
+
+      if (user_id) {
+        query = query.eq('user_id', user_id);
+      }
+
+      if (start_date) {
+        query = query.gte('created_at', new Date(start_date).toISOString());
+      }
+
+      if (end_date) {
+        query = query.lte('created_at', new Date(end_date).toISOString());
+      }
+
+      query = query.range(offset, offset + limit - 1);
+
+      const { data: logs, error, count } = await query;
+
+      if (error) throw error;
+
+      const pagination = {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: count
+      };
+
+      res.json(Response.paginated(logs, pagination, 'Logs audit récupérés'));
+
+    } catch (error) {
+      logger.error('Erreur récupération logs audit', {
+        adminId: req.user.id,
+        error: error.message
+      });
+
+      res.status(500).json(Response.error('Erreur lors de la récupération des logs audit'));
+    }
+  }
+
+  async getUserActivityLogs(req, res) {
+    try {
+      const { userId } = req.params;
+      const { 
+        page = 1, 
+        limit = 30,
+        action_type 
+      } = req.query;
+
+      const offset = (page - 1) * limit;
+      const adminId = req.user.id;
+
+      logger.info('Récupération logs activité utilisateur', { adminId, userId });
+
+      let query = database.client
+        .from('user_activity_logs')
+        .select('*', { count: 'exact' })
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false });
+
+      if (action_type) {
+        query = query.eq('action_type', action_type);
+      }
+
+      query = query.range(offset, offset + limit - 1);
+
+      const { data: logs, error, count } = await query;
+
+      if (error) throw error;
+
+      const pagination = {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: count
+      };
+
+      res.json(Response.paginated(logs, pagination, 'Logs activité utilisateur récupérés'));
+
+    } catch (error) {
+      logger.error('Erreur récupération logs activité utilisateur', {
+        adminId: req.user.id,
+        userId: req.params.userId,
+        error: error.message
+      });
+
+      res.status(500).json(Response.error('Erreur lors de la récupération des logs d\'activité'));
+    }
+  }
+
+  async exportLogs(req, res) {
+    try {
+      const { type, format = 'json' } = req.query;
+      const adminId = req.user.id;
+
+      logger.info('Export logs demandé', { adminId, type, format });
+
+      // Générer les logs selon le type
+      const logs = await this.generateExportLogs(type);
+      
+      if (format === 'csv') {
+        const csvData = this.convertToCSV(logs);
+        
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename=logs_${type}_${new Date().toISOString().split('T')[0]}.csv`);
+        
+        return res.send(csvData);
+      }
+
+      res.json(Response.success(logs, 'Logs exportés avec succès'));
+
+    } catch (error) {
+      logger.error('Erreur export logs', {
+        adminId: req.user.id,
+        error: error.message
+      });
+
+      res.status(500).json(Response.error('Erreur lors de l\'export des logs'));
+    }
+  }
+
+  // Méthodes helper internes
+  async generateExportLogs(type) {
+    try {
+      let query;
+      
+      switch (type) {
+        case 'system':
+          query = database.client
+            .from('system_logs')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .limit(1000);
+          break;
+        
+        case 'audit':
+          query = database.client
+            .from('audit_logs')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .limit(1000);
+          break;
+        
+        case 'security':
+          query = database.client
+            .from('system_logs')
+            .select('*')
+            .in('level', ['error', 'warn', 'security'])
+            .order('created_at', { ascending: false })
+            .limit(1000);
+          break;
+        
+        default:
+          throw new Error('Type de logs non supporté');
+      }
+
+      const { data: logs, error } = await query;
+
+      if (error) throw error;
+
+      return logs || [];
+
+    } catch (error) {
+      logger.error('Erreur génération logs export', { type, error: error.message });
+      return [];
+    }
+  }
+
+  convertToCSV(logs) {
+    if (!logs || logs.length === 0) {
+      return 'Aucune donnée à exporter';
     }
 
-    return { success: true };
-  } catch (error) {
-    console.error('Logging failed:', error);
-    return { success: false, error: error.message };
+    const headers = Object.keys(logs[0]).join(',');
+    const rows = logs.map(log => 
+      Object.values(log).map(value => 
+        typeof value === 'string' ? `"${value.replace(/"/g, '""')}"` : value
+      ).join(',')
+    );
+
+    return [headers, ...rows].join('\n');
   }
 }
 
-/**
- * ✅ Journal de sécurité pour les incidents critiques
- * @param {string} userId - ID de l'utilisateur concerné
- * @param {string} securityEvent - Type d'événement de sécurité
- * @param {object} details - Détails de l'incident
- */
-export async function addSecurityLog(userId, securityEvent, details = {}) {
-  try {
-    const { error } = await supabase
-      .from(LOG_TABLE)
-      .insert([{
-        admin_id: userId,
-        action: `SECURITY_${securityEvent}`,
-        details: {
-          ...details,
-          security_level: 'HIGH',
-          timestamp: new Date().toISOString()
-        },
-        ip_address: details.ip_address || 'system',
-        user_agent: details.user_agent || 'ai-assistant'
-      }]);
-
-    if (error) {
-      console.error('Security log error:', error);
-      console.error(`🔴 SECURITY_ALERT: ${securityEvent}`, { userId, details });
-    }
-
-    return { success: true };
-  } catch (error) {
-    console.error('Security logging failed:', error);
-    return { success: false, error: error.message };
-  }
-}
-
-/**
- * ✅ Récupérer les logs de l'assistant IA (admin only)
- * @param {number} limit - Nombre de logs à récupérer
- */
-export async function getAILogs(limit = 50) {
-  try {
-    const { data: logs, error } = await supabase
-      .from(LOG_TABLE)
-      .select('*')
-      .ilike('action', 'AI_%')
-      .order('created_at', { ascending: false })
-      .limit(limit);
-
-    if (error) throw error;
-
-    return { logs: logs || [], error: null };
-  } catch (error) {
-    console.error('Get AI logs error:', error);
-    return { logs: [], error: error.message };
-  }
-}
-
-/**
- * ✅ Récupérer tous les logs (admin only - sécurité gérée par le routeur)
- */
-export async function getLogs(req, res) {
-  try {
-    // Le middleware requireRole(["ADMIN", "SUPER_ADMIN"]) garantit l'accès.
-
-    const { data, error } = await supabase
-      .from(LOG_TABLE)
-      // Joindre la table des utilisateurs pour le nom
-      .select("*, admin:admin_id(username)") 
-      .order("created_at", { ascending: false });
-
-    if (error) throw error;
-
-    // Si la jointure utilise 'admin_id', le retour sera { admin: { username: '...' } }
-    return res.json({ success: true, logs: data });
-  } catch (err) {
-    console.error("Get logs error:", err);
-    return res.status(500).json({ error: "Erreur serveur", details: err.message });
-  }
-}
-
-/**
- * ✅ Filtrer les logs par type d'action
- * @param {string} actionFilter - Filtre sur le type d'action
- * @param {number} limit - Nombre maximum de résultats
- */
-export async function getLogsByAction(actionFilter, limit = 100) {
-  try {
-    const { data: logs, error } = await supabase
-      .from(LOG_TABLE)
-      .select('*')
-      .ilike('action', `%${actionFilter}%`)
-      .order('created_at', { ascending: false })
-      .limit(limit);
-
-    if (error) throw error;
-
-    return { logs: logs || [], error: null };
-  } catch (error) {
-    console.error('Get logs by action error:', error);
-    return { logs: [], error: error.message };
-  }
-}
-
-/**
- * ✅ Nettoyer les logs anciens (maintenance)
- * @param {number} daysToKeep - Nombre de jours à conserver
- */
-export async function cleanupOldLogs(daysToKeep = 30) {
-  try {
-    const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - daysToKeep);
-
-    const { error } = await supabase
-      .from(LOG_TABLE)
-      .delete()
-      .lt('created_at', cutoffDate.toISOString());
-
-    if (error) throw error;
-
-    console.log(`✅ Logs cleanup completed - kept ${daysToKeep} days of data`);
-    return { success: true, message: `Logs older than ${daysToKeep} days have been cleaned up` };
-  } catch (error) {
-    console.error('Cleanup logs error:', error);
-    return { success: false, error: error.message };
-  }
-}
-
-export default {
-  addLog,
-  addSecurityLog,
-  getAILogs,
-  getLogs,
-  getLogsByAction,
-  cleanupOldLogs
-};
+module.exports = new LogController();

@@ -28,31 +28,6 @@ class WalletController {
     }
   }
 
-  async addFunds(req, res) {
-    try {
-      const { amount, source, metadata } = req.body;
-      const userId = req.user.id;
-
-      logger.info('Ajout de fonds au portefeuille', { userId, amount, source });
-
-      const result = await walletService.addFunds(userId, amount, source, metadata);
-      
-      if (!result.success) {
-        return res.status(400).json(result);
-      }
-
-      res.status(201).json(result);
-
-    } catch (error) {
-      logger.error('Erreur ajout de fonds', {
-        userId: req.user.id,
-        amount: req.body.amount,
-        error: error.message
-      });
-
-      res.status(500).json(Response.error('Erreur lors de l\'ajout de fonds'));
-    }
-  }
 
   async getTransactionHistory(req, res) {
     try {

@@ -1,14 +1,31 @@
 const express = require('express');
 const router = express.Router();
 const statsController = require('../controllers/statsController');
-const { authenticate } = require('../middleware/auth');
+const authMiddleware = require('../middleware/authMiddleware');
 
-router.use(authenticate);
+// Statistiques plateforme (admin seulement)
+router.get('/platform',
+  authMiddleware.authenticateToken,
+  authMiddleware.requireRole([1]),
+  statsController.getPlatformStats
+);
 
-// Tableau de bord statistiques
-router.get('/dashboard', statsController.getDashboardStats);
-router.get('/sales-analytics', statsController.getSalesAnalytics);
-router.get('/product-performance', statsController.getProductPerformance);
-router.get('/revenue-analytics', statsController.getRevenueAnalytics);
+// Statistiques utilisateur
+router.get('/user',
+  authMiddleware.authenticateToken,
+  statsController.getUserStats
+);
+
+// Statistiques revenus
+router.get('/revenue',
+  authMiddleware.authenticateToken,
+  statsController.getRevenueStats
+);
+
+// Statistiques missions
+router.get('/missions',
+  authMiddleware.authenticateToken,
+  statsController.getMissionStats
+);
 
 module.exports = router;

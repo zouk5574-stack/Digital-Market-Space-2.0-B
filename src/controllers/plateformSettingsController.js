@@ -144,7 +144,7 @@ export const getPublicSettings = async (req, res) => {
 // Fonctions utilitaires
 const getDefaultSettings = () => ({
   platform_name: 'Digital Market Space',
-  platform_email: 'contact@digitalmarketspace.com',
+  platform_email: 'digitalmarketspace488@gmail.com',
   platform_currency: 'XOF',
   commission_rate: 0.10,
   min_withdrawal_amount: 5000,
@@ -166,7 +166,7 @@ const getDefaultSettings = () => ({
 
 const getDefaultPublicSettings = () => ({
   platform_name: 'Digital Market Space',
-  platform_email: 'contact@digitalmarketspace.com',
+  platform_email: 'digitalmarketspace488@gmail.com',
   platform_currency: 'XOF',
   commission_rate: 0.10,
   min_withdrawal_amount: 5000,
